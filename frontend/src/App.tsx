@@ -385,9 +385,8 @@ export default function App() {
                 <thead>
                   <tr className="bg-gray-50 dark:bg-gray-900/50 text-xs font-semibold text-gray-500 dark:text-gray-400 border-b border-gray-200 dark:border-gray-800 align-middle">
                     <th className="px-6 py-3 align-middle text-left">Feed Name / Platforms</th>
-                    <th className="px-6 py-3 align-middle text-left">Aggregated Sources</th>
                     <th className="px-6 py-3 align-middle text-center">Cache Refresh (TTL)</th>
-                    <th className="px-6 py-3 align-middle text-center">Generated RSS Feed URL</th>
+                    <th className="px-6 py-3 align-middle text-center">Copy URL</th>
                     <th className="px-6 py-3 align-middle text-center">Last Checked</th>
                     <th className="px-6 py-3 text-right align-middle">Actions</th>
                   </tr>
@@ -406,41 +405,6 @@ export default function App() {
                           ))}
                         </div>
                       </td>
-                      <td className="px-6 py-4 align-middle text-left">
-                        {feed.sources.length === 0 ? (
-                          <span className="text-xs text-gray-400">No sources</span>
-                        ) : (
-                          <div className="flex items-center space-x-1.5 text-xs text-gray-550 dark:text-gray-400">
-                            {getPlatformIcon(feed.sources[0].type)}
-                            <a 
-                              href={feed.sources[0].url} 
-                              target="_blank" 
-                              rel="noreferrer" 
-                              className="hover:text-indigo-600 inline-flex items-center text-xs truncate max-w-[150px] font-mono text-gray-650 dark:text-gray-400 font-semibold"
-                              title={feed.sources[0].url}
-                            >
-                              <span className="truncate">
-                                {(() => {
-                                  let displayUrl = feed.sources[0].url;
-                                  if (feed.sources[0].type === 'fourchan' && feed.sources[0].config) {
-                                    try {
-                                      const parsed = JSON.parse(feed.sources[0].config);
-                                      displayUrl = `/${parsed.board}/ "${parsed.query}"`;
-                                    } catch {}
-                                  }
-                                  return displayUrl;
-                                })()}
-                              </span>
-                              <ExternalLink className="w-2.5 h-2.5 ml-1 flex-shrink-0 text-gray-400 hover:text-indigo-500" />
-                            </a>
-                            {feed.sources.length > 1 && (
-                              <span className="text-[9px] bg-gray-150 dark:bg-gray-800 text-gray-600 dark:text-gray-300 px-1.5 py-0.5 rounded-full font-bold flex-shrink-0">
-                                +{feed.sources.length - 1} more
-                              </span>
-                            )}
-                          </div>
-                        )}
-                      </td>
                       <td className="px-6 py-4 align-middle text-center font-medium">
                         {feed.ttl === 0 ? (
                           <span 
@@ -455,10 +419,8 @@ export default function App() {
                           <span className="text-gray-650 dark:text-gray-350">{feed.ttl / 60} hour{feed.ttl / 60 > 1 ? 's' : ''}</span>
                         )}
                       </td>
-                      <td className="px-6 py-4 align-middle text-center">                          <div className="flex items-center space-x-1 bg-gray-50 dark:bg-gray-950 p-1.5 rounded-lg border border-gray-200 dark:border-gray-800 max-w-[320px] mx-auto">
-                            <span className="text-xs truncate font-mono text-gray-650 dark:text-gray-450 flex-1">
-                              {`${window.location.origin}/feeds/${feed.id}`}
-                            </span>
+                      <td className="px-6 py-4 align-middle text-center">
+                        <div className="flex items-center space-x-1 bg-gray-50 dark:bg-gray-950 p-1.5 rounded-lg border border-gray-200 dark:border-gray-800 w-fit mx-auto">
                             <button 
                               onClick={() => handleCopyLink(feed.id)}
                               className="p-1 rounded bg-white hover:bg-gray-100 dark:bg-gray-800 dark:hover:bg-gray-700 border border-gray-200 dark:border-gray-700 text-gray-500 dark:text-gray-400 hover:text-indigo-600 transition"
