@@ -109,6 +109,8 @@ export interface InstallOptions {
   files?: PackageFiles;
   /** Register the RSS Sync server as a Windows service when missing (default true on Windows). */
   installService?: boolean;
+  /** RSS server folder (must contain package.json + scripts/keep_alive.cjs). */
+  serverRoot?: string;
   /** sc.exe runner override (tests inject a fake so no admin rights are needed). */
   serviceRunner?: ServiceRunner;
 }
@@ -670,15 +672,31 @@ function isServiceRoot(dir: string): boolean {
 
 /**
  * Where the RSS server lives (must contain package.json + scripts/keep_alive.cjs).
- * Resolution: RSS_SERVER_ROOT env → current dir → next to the installer exe.
+ * An explicit override (--server-root / baked build dir) is strict: a bad value
+ * returns null so the installer reports it instead of guessing. Otherwise:
+ * RSS_SERVER_ROOT env → current dir (dev) → walking up from the exe location.
  */
-export function findServiceRoot(): string | null {
+export function findServiceRoot(override?: string): string | null {
+  if (override) {
+    const p = path.resolve(override);
+    return isServiceRoot(p) ? p : null;
+  }
   if (process.env.RSS_SERVER_ROOT) {
     const p = path.resolve(process.env.RSS_SERVER_ROOT);
     if (isServiceRoot(p)) return p;
   }
-  for (const candidate of [process.cwd(), path.dirname(path.dirname(process.execPath))]) {
-    if (isServiceRoot(candidate)) return candidate;
+  const candidates: string[] = [process.cwd()];
+  // Walk up from the exe dir (covers dist-zen/, the repo root, subfolders, ...).
+  let dir = path.dirname(process.execPath);
+  for (let i = 0; i < 6; i++) {
+    candidates.push(dir);
+    const parent = path.dirname(dir);
+    if (parent === dir) break;
+    dir = parent;
+  }
+  for (const c of candidates) {
+    const p = path.resolve(c);
+    if (isServiceRoot(p)) return p;
   }
   return null;
 }
@@ -730,7 +748,7 @@ function ensureServerService(opts: InstallOptions, actions: Action[], nextSteps:
   }
 
   const nodeExe = findNodeExe();
-  const root = findServiceRoot();
+  const root = findServiceRoot(opts.serverRoot);
   if (!nodeExe || !root) {
     warn(
       `Windows service: cannot register "${name}" — node.exe: ${nodeExe ?? 'not found'}, ` +

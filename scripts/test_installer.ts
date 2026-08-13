@@ -413,6 +413,22 @@ check('findNodeExe / findServiceRoot resolve on the dev machine', () => {
   assert.ok(findServiceRoot(), 'the repo root must be resolvable as the service root');
 });
 
+check('findServiceRoot honors an override and rejects bogus dirs', () => {
+  assert.strictEqual(findServiceRoot(process.cwd()), process.cwd());
+  assert.strictEqual(findServiceRoot('C:\\definitely-not-a-server'), null);
+});
+
+check('install warns (not errors) when the server root cannot be found', () => {
+  const { root, programDir } = makeFakeZenTree();
+  const r = install(optsFor(root, programDir, { serverRoot: 'C:\\definitely-not-a-server' }));
+  const warn = r.actions.find(
+    (a) => a.level === 'warn' && a.message.includes('cannot register')
+  );
+  assert.ok(warn, JSON.stringify(r.actions));
+  assert.ok(warn!.message.includes('sc create'), 'manual command must be printed');
+  fs.rmSync(root, { recursive: true, force: true });
+});
+
 // ----------------------------------------------------------------------------
 
 console.log(`\n${passed} passed, ${failed} failed`);

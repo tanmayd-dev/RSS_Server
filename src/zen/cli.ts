@@ -2,7 +2,7 @@
 // In the executable the package files come from the embedded module; in dev
 // (tsx / npm scripts) the stub is empty and files are read from the repo.
 
-import { embeddedPackageFiles } from './generated/embedded.js';
+import { builtFromDir, embeddedPackageFiles } from './generated/embedded.js';
 import {
   discoverProfiles,
   install,
@@ -28,6 +28,7 @@ Options:
   --all                  Target every discovered profile
   --profile-root <dir>   Zen app data root (default: %APPDATA%\\Zen Browser)
   --zen-program-dir <dir>  Zen program dir containing zen.exe
+  --server-root <dir>    RSS server folder (contains package.json + scripts/keep_alive.cjs)
   --dry-run              Show what would happen without writing anything
   --force                Proceed while Zen is running; overwrite files that differ
   --no-service           Skip registering the RSS Sync server as a Windows service
@@ -39,6 +40,7 @@ The installer also registers the RSS Sync server as a Windows service
 ("RSS Sync Server", auto start) when one is not present, so your feeds
 keep syncing even when Zen is closed. That step needs an elevated prompt:
 run zen-install.exe as administrator (or run the printed sc.exe command).
+If the server folder is not detected, pass --server-root <dir>.
 
 If your server runs at a different address than http://localhost:3000,
 set it in Zen: Settings -> Mods -> RSS Sync.
@@ -50,6 +52,7 @@ interface CliOptions {
   all: boolean;
   profileRoot?: string;
   zenProgramDir?: string;
+  serverRoot?: string;
   dryRun: boolean;
   force: boolean;
   noService: boolean;
@@ -82,6 +85,12 @@ function parseArgs(argv: string[]): { opts: CliOptions; error?: string } {
         const v = argv[++i];
         if (!v) return { opts, error: '--zen-program-dir requires a value' };
         opts.zenProgramDir = v;
+        break;
+      }
+      case '--server-root': {
+        const v = argv[++i];
+        if (!v) return { opts, error: '--server-root requires a value' };
+        opts.serverRoot = v;
         break;
       }
       case '--all':
@@ -292,6 +301,9 @@ function cmdInstall(opts: CliOptions, files: PackageFiles): void {
     dryRun: opts.dryRun,
     force: opts.force,
     installService: !opts.noService,
+    // Baked at build time so the published exe knows where the server lives
+    // even when downloaded outside the repo; --server-root wins over it.
+    serverRoot: opts.serverRoot ?? builtFromDir ?? undefined,
     files,
   });
   if (opts.verbose) {
