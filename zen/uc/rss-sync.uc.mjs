@@ -55,14 +55,10 @@ const CONFIG = {
   }
 
   let manager = null;
-  let RssProvider = null;
 
   try {
     ({ ZenLiveFoldersManager: manager } = ChromeUtils.importESModule(
       "resource:///modules/zen/ZenLiveFoldersManager.sys.mjs"
-    ));
-    ({ nsRssLiveFolderProvider: RssProvider } = ChromeUtils.importESModule(
-      "resource:///modules/zen/RssLiveFolder.sys.mjs"
     ));
   } catch (e) {
     console.error("[rss-sync] Zen Live Folders API unavailable:", e);
@@ -135,52 +131,74 @@ const CONFIG = {
   }
 
   async function createLiveFolder(feed, cfg) {
-    const folder = win.gZenFolders.createFolder([], {
-      label: feed.name || "Feed",
-      isLiveFolder: true,
-      collapsed: true,
-    });
-    folder.setAttribute("rss-sync-feed-id", feed.id);
-    folder.setAttribute("data-rss-sync-name", feed.name || "");
-    try {
-      win.gZenFolders.setFolderUserIcon(
-        folder,
-        "chrome://browser/skin/zen-icons/selectable/logo-rss.svg"
+    // Drive Zen's own native creation flow (ZenLiveFoldersManager.createFolder("rss"))
+    // instead of hand-rolling the provider, so the folder is guaranteed to be a real
+    // live folder (registered with the manager, live-folder UI, context menu, etc.).
+    // We only supply the folder URL in place of the URL prompt.
+    const ProviderClass = manager.registry?.get("rss");
+    if (!ProviderClass || typeof manager.createFolder !== "function") {
+      console.warn(
+        "[rss-sync] Native live-folder API unavailable (manager.registry or createFolder missing); skipping create."
       );
-    } catch {
-      /* icon is cosmetic */
+      return null;
     }
 
-    // Mirror ZenLiveFoldersManager.createFolder("rss") but with a fixed URL (no prompt).
-    const liveFolder = new RssProvider({
-      state: {
-        url: `${cfg.serverUrl}/feeds/${feed.id}?ttl=0`,
-        maxItems: cfg.maxItems,
-        timeRange: 0,
-        interval: cfg.folderIntervalMs,
-        lastFetched: 0,
-        options: {},
-      },
-      manager,
-      id: folder.id,
-    });
+    const url = `${cfg.serverUrl}/feeds/${feed.id}?ttl=0`;
+    const origPrompt = ProviderClass.promptForFeedUrl;
+    let folderId = -1;
+    try {
+      ProviderClass.promptForFeedUrl = async () => url;
+      folderId = await manager.createFolder("rss");
+    } finally {
+      ProviderClass.promptForFeedUrl = origPrompt;
+    }
+
+    if (!folderId || folderId === -1) {
+      return null;
+    }
+
+    const liveFolder = manager.getFolder(folderId);
+    if (!liveFolder) {
+      return null;
+    }
+
+    // Apply engine config on top of Zen's native creation defaults.
+    liveFolder.state.maxItems = cfg.maxItems;
+    liveFolder.state.timeRange = 0;
+    if (liveFolder.state.interval !== cfg.folderIntervalMs) {
+      liveFolder.state.interval = cfg.folderIntervalMs;
+      liveFolder.stop();
+      liveFolder.start();
+    }
+    manager.saveState();
+
+    // Name the folder after the feed and mark it as engine-managed.
+    const folder = manager.getFolderForLiveFolder(liveFolder);
+    if (folder) {
+      folder.label = feed.name || "Feed";
+      folder.setAttribute("rss-sync-feed-id", feed.id);
+      folder.setAttribute("data-rss-sync-name", feed.name || "");
+    }
 
     // Surface per-folder refresh state for the mod's CSS.
     const origFetchItems = liveFolder.fetchItems.bind(liveFolder);
     liveFolder.fetchItems = async () => {
-      folder.setAttribute("rss-sync-refreshing", "");
+      if (folder) {
+        folder.setAttribute("rss-sync-refreshing", "");
+      }
       try {
         const result = await origFetchItems();
-        folder.setAttribute("data-rss-sync-last-fetched", String(Date.now()));
+        if (folder) {
+          folder.setAttribute("data-rss-sync-last-fetched", String(Date.now()));
+        }
         return result;
       } finally {
-        folder.removeAttribute("rss-sync-refreshing");
+        if (folder) {
+          folder.removeAttribute("rss-sync-refreshing");
+        }
       }
     };
 
-    manager.liveFolders.set(folder.id, liveFolder);
-    liveFolder.start();
-    manager.saveState();
     console.info(`[rss-sync] Created live folder "${feed.name}" (feed ${feed.id})`);
     return liveFolder;
   }

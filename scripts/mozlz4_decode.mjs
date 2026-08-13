@@ -55,14 +55,24 @@ if (!file) {
 
 const data = readFileSync(file);
 const magic = data.subarray(0, 8).toString("latin1");
-// Standard Firefox writes "mozLz4\0"; Zen writes "mozLz40\0". Either way the
-// payload starts at byte 8.
+// Standard Firefox writes "mozLz4\0"; Zen writes "mozLz40\0" and appends a
+// 4-byte little-endian uncompressed size before the LZ4 block.
 if (!magic.startsWith("mozLz4")) {
   console.error(`Not a mozLz4 file (magic: ${JSON.stringify(magic)})`);
   process.exit(1);
 }
 
-const out = Buffer.alloc(data.length * 4);
-const size = decodeLz4Block(data, 8, out);
+let blockOffset = 8;
+if (data.length >= 12) {
+  const sizeLE = data.readUInt32LE(8);
+  // Heuristic: if the 4 bytes at offset 8 look like a plausible size (and the
+  // byte at offset 12 is a valid LZ4 token), treat them as a size prefix.
+  if (sizeLE > 0 && sizeLE < data.length * 100 && (data[12] >> 4) <= 15) {
+    blockOffset = 12;
+  }
+}
+
+const out = Buffer.alloc(data.length * 8);
+const size = decodeLz4Block(data, blockOffset, out);
 process.stdout.write(out.subarray(0, size));
 process.stdout.write("\n");

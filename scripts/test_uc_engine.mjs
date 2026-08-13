@@ -38,9 +38,13 @@ function makeFolder(label) {
 
 const manager = {
   liveFolders: new Map(),
+  registry: new Map(),
   window: null, // set below
   stateRestored: { promise: Promise.resolve() },
   saveState() {},
+  getFolder(id) {
+    return this.liveFolders.get(id) ?? null;
+  },
   getFolderForLiveFolder(lf) {
     return foldersById.get(lf.id) ?? null;
   },
@@ -50,6 +54,30 @@ const manager = {
       foldersById.delete(id);
     }
   },
+  // Emulates ZenLiveFoldersManager.createFolder("rss") with the URL prompt patched
+  // away by the engine: asks the provider for a URL, creates the folder node,
+  // constructs + registers the provider, starts it and saves state.
+  async createFolder(type) {
+    const [provider] = type.split(":");
+    const ProviderClass = this.registry.get(provider);
+    if (!ProviderClass) {
+      return -1;
+    }
+    const url = await ProviderClass.promptForFeedUrl(this.window);
+    if (!url) {
+      return -1;
+    }
+    const folder = makeFolder("Feed");
+    const liveFolder = new ProviderClass({
+      id: folder.id,
+      state: { url, interval: 30 * 60 * 1000, lastFetched: 0, options: {} },
+      manager: this,
+    });
+    this.liveFolders.set(folder.id, liveFolder);
+    liveFolder.start();
+    this.saveState();
+    return folder.id;
+  },
 };
 
 class FakeProvider {
@@ -57,6 +85,12 @@ class FakeProvider {
     this.id = id;
     this.state = state;
     this._refreshingDuringFetch = false;
+  }
+  static promptForFeedUrl() {
+    return null; // the engine patches this to supply the folder URL
+  }
+  static async getMetadata() {
+    return { label: "Feed", icon: null };
   }
   start() {
     this.started = true;
@@ -87,6 +121,7 @@ globalThis.window = {
   },
 };
 manager.window = globalThis.window;
+manager.registry.set("rss", FakeProvider);
 
 globalThis.ChromeUtils = {
   importESModule() {
