@@ -10,13 +10,19 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
   discoverProfiles,
+  findNodeExe,
+  findServiceRoot,
   findZenProgramDir,
   install,
   parseProfilesIni,
+  queryService,
   readPackageFilesFromDisk,
   resolveTarget,
+  serviceCreateCommand,
   status,
   uninstall,
+  type ScResult,
+  type ServiceRunner,
 } from '../src/zen/installer.js';
 
 const REPO_ZEN_DIR = fileURLToPath(new URL('../zen/', import.meta.url));
@@ -83,8 +89,50 @@ function makeFakeZenTree(): { root: string; programDir: string; defaultProfile: 
 const optsFor = (root: string, programDir: string, extra: Record<string, unknown> = {}) => ({
   profileRoot: root,
   zenProgramDir: programDir,
+  // Every install/status call goes through a fresh fake sc.exe so the suite
+  // never touches the real Service Control Manager.
+  serviceRunner: fakeScRunner(),
   ...extra,
 });
+
+// In-memory stand-in for sc.exe: tracks created services, exits 1060 for
+// unknown ones, mirrors the real sc.exe exit codes.
+function fakeScRunner(): ServiceRunner {
+  const services = new Set<string>();
+  return (args: string[]): ScResult => {
+    const [cmd, name] = args;
+    if (cmd === 'query') {
+      if (!services.has(name)) {
+        return { ok: false, code: 1060, stdout: '', stderr: '' };
+      }
+      return {
+        ok: true,
+        code: 0,
+        stdout: `SERVICE_NAME: ${name}\n        TYPE               : 10  WIN32_OWN_PROCESS\n        STATE              : 4  RUNNING`,
+        stderr: '',
+      };
+    }
+    if (cmd === 'create') {
+      if (services.has(name)) {
+        return {
+          ok: false,
+          code: 1073,
+          stdout: '',
+          stderr: '[SC] OpenService FAILED 1073: The specified service already exists.',
+        };
+      }
+      services.add(name);
+      return { ok: true, code: 0, stdout: '[SC] CreateService SUCCESS', stderr: '' };
+    }
+    if (cmd === 'start') {
+      if (!services.has(name)) {
+        return { ok: false, code: 1060, stdout: '', stderr: '' };
+      }
+      return { ok: true, code: 0, stdout: '[SC] StartService SUCCESS', stderr: '' };
+    }
+    return { ok: false, code: 1, stdout: '', stderr: `unknown sc.exe command: ${cmd}` };
+  };
+}
 
 // --- tests ------------------------------------------------------------------
 
@@ -304,6 +352,65 @@ check('uninstall leaves a user-edited engine file alone', () => {
   assert.ok(r.actions.some((a) => a.level === 'warn' && a.message.includes('differs')));
   assert.strictEqual(fs.readFileSync(enginePath, 'utf8'), '// user edited');
   fs.rmSync(root, { recursive: true, force: true });
+});
+
+section('windows service');
+check('queryService: missing vs registered service', () => {
+  const runner = fakeScRunner();
+  const missing = queryService('RSSSyncServer', runner);
+  assert.strictEqual(missing.present, false);
+  assert.strictEqual(missing.running, false);
+  assert.strictEqual(missing.detail, undefined, '1060 must not surface as a detail');
+
+  runner(['create', 'RSSSyncServer', 'binPath=', '"C:\\node.exe" "C:\\keep_alive.cjs"', 'start=', 'auto', 'DisplayName=', 'RSS Sync Server']);
+  const present = queryService('RSSSyncServer', runner);
+  assert.strictEqual(present.present, true);
+  assert.strictEqual(present.running, true);
+});
+
+check('install registers the service when missing, skips on re-run', () => {
+  const { root, programDir } = makeFakeZenTree();
+  const runner = fakeScRunner();
+  const r1 = install(optsFor(root, programDir, { serviceRunner: runner }));
+  assert.ok(
+    r1.actions.some((a) => a.level === 'ok' && a.message.includes('registered')),
+    JSON.stringify(r1.actions)
+  );
+  const r2 = install(optsFor(root, programDir, { serviceRunner: runner }));
+  assert.ok(
+    r2.actions.some((a) => a.level === 'skip' && a.message.includes('already registered')),
+    JSON.stringify(r2.actions)
+  );
+  fs.rmSync(root, { recursive: true, force: true });
+});
+
+check('install --no-service skips the service step', () => {
+  const { root, programDir } = makeFakeZenTree();
+  const r = install(optsFor(root, programDir, { installService: false }));
+  assert.ok(
+    r.actions.some((a) => a.level === 'skip' && a.message.includes('--no-service')),
+    JSON.stringify(r.actions)
+  );
+  fs.rmSync(root, { recursive: true, force: true });
+});
+
+check('serviceCreateCommand quotes paths for an elevated prompt', () => {
+  const cmd = serviceCreateCommand(
+    'RSSSyncServer',
+    'C:\\Program Files\\nodejs\\node.exe',
+    'C:\\RSS_Server\\scripts\\keep_alive.cjs'
+  );
+  assert.ok(cmd.startsWith('sc create RSSSyncServer'), cmd);
+  // sc.exe wants inner quotes escaped with backslashes inside binPath= "..."
+  assert.ok(cmd.includes('\\"C:\\Program Files\\nodejs\\node.exe\\"'), cmd);
+  assert.ok(cmd.includes('\\"C:\\RSS_Server\\scripts\\keep_alive.cjs\\"'), cmd);
+  assert.ok(cmd.includes('start= auto'), cmd);
+  assert.ok(cmd.includes('DisplayName= "RSS Sync Server"'), cmd);
+});
+
+check('findNodeExe / findServiceRoot resolve on the dev machine', () => {
+  assert.ok(findNodeExe(), 'node.exe must be resolvable');
+  assert.ok(findServiceRoot(), 'the repo root must be resolvable as the service root');
 });
 
 // ----------------------------------------------------------------------------

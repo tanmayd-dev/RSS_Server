@@ -1,8 +1,9 @@
 // Core logic for the RSS Sync Zen installer.
 //
 // Windows-only (Zen's profile root is %APPDATA%\Zen Browser). Zero runtime
-// dependencies: node:fs / node:os / node:path / node:crypto only, so the whole
-// module can be bundled into a single-file Windows executable.
+// dependencies beyond node builtins: node:fs / node:os / node:path /
+// node:crypto / node:child_process (for sc.exe), so the whole module can be
+// bundled into a single-file Windows executable.
 //
 // Package files (the engine, the mod and the vendored loader) are passed in via
 // `files` so the same code works from the repo (dev/tests) and from the
@@ -14,10 +15,15 @@
 //   part) unless a loader is already present; Sine and other loaders are kept.
 // - Preferences are LEFT TO THE USER: the installer never writes user.js or
 //   prefs.js. It reports which mod.rsssync.* prefs are set and how to set them.
+// - Windows service: install() also registers the RSS Sync server as a Windows
+//   service ("RSS Sync Server", auto start) when one is not already present,
+//   so feeds keep syncing even when Zen is closed. Creating the service needs
+//   an elevated prompt; otherwise the installer prints the exact sc.exe command.
 // - Safety: atomic writes with backups, never clobber files we did not ship
 //   (byte-identical check), refuse to write into a running profile without
 //   --force, never write prefs.js.
 
+import { execFileSync } from 'node:child_process';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
@@ -71,6 +77,7 @@ export interface StatusReport {
   };
   mod: { modDir: boolean; themesEntry: boolean; installed: boolean };
   prefs: { set: string[]; missing: string[] };
+  service: { name: string; present: boolean; running: boolean; detail?: string };
   nextSteps: string[];
 }
 
@@ -100,6 +107,10 @@ export interface InstallOptions {
   force?: boolean;
   /** Package file contents. Defaults to the repo's zen/ directory (dev). */
   files?: PackageFiles;
+  /** Register the RSS Sync server as a Windows service when missing (default true on Windows). */
+  installService?: boolean;
+  /** sc.exe runner override (tests inject a fake so no admin rights are needed). */
+  serviceRunner?: ServiceRunner;
 }
 
 // ---------------------------------------------------------------------------
@@ -548,6 +559,226 @@ export function prefsSetInUserJs(profileDir: string): string[] {
 }
 
 // ---------------------------------------------------------------------------
+// Windows service (RSS Sync server)
+// ---------------------------------------------------------------------------
+// The RSS Sync server (dist/index.js via scripts/keep_alive.cjs) is registered
+// as a real Windows service so feeds keep syncing even when Zen is closed and
+// no one is logged in. keep_alive.cjs spawns the server with the project root
+// as its working directory, which matters because the server resolves paths
+// (frontend/dist, prisma db) relative to cwd.
+//
+// Creating a service needs an elevated prompt; when sc.exe is denied, the
+// installer reports the exact command to run as administrator instead.
+
+/** Display name shown in the Windows Services console. */
+export const SERVICE_DISPLAY_NAME = 'RSS Sync Server';
+
+/** Canonical service name. Override with RSS_SERVICE_NAME (mainly for tests). */
+export function serviceName(): string {
+  return (process.env.RSS_SERVICE_NAME ?? '').trim() || 'RSSSyncServer';
+}
+
+export interface ServiceState {
+  present: boolean;
+  running: boolean;
+  /** Detail when the presence check itself failed (e.g. sc.exe missing). */
+  detail?: string;
+}
+
+export interface ScResult {
+  ok: boolean;
+  code: number;
+  stdout: string;
+  stderr: string;
+}
+
+/** Runs sc.exe; injectable so install/status are testable without admin rights. */
+export type ServiceRunner = (args: string[]) => ScResult;
+
+export function defaultServiceRunner(args: string[]): ScResult {
+  try {
+    const stdout = execFileSync('sc.exe', args, { encoding: 'utf8', windowsHide: true });
+    return { ok: true, code: 0, stdout, stderr: '' };
+  } catch (err: unknown) {
+    const e = err as { status?: number; stdout?: string; stderr?: string };
+    return {
+      ok: false,
+      code: e.status ?? -1,
+      stdout: e.stdout ?? '',
+      stderr: e.stderr ?? '',
+    };
+  }
+}
+
+/** Query a service by name (sc query). Exit code 1060 = not registered. */
+export function queryService(
+  name: string,
+  runner: ServiceRunner = defaultServiceRunner
+): ServiceState {
+  const r = runner(['query', name]);
+  if (r.ok) {
+    const m = r.stdout.match(/STATE\s*:\s*(\d+)\s+(\w+)/);
+    return {
+      present: true,
+      running: !!m && (m[1] === '4' || /running/i.test(m[2])),
+    };
+  }
+  if (r.code === 1060) return { present: false, running: false };
+  return {
+    present: false,
+    running: false,
+    detail: (r.stderr || r.stdout).trim() || `sc.exe exited with code ${r.code}`,
+  };
+}
+
+/** Absolute path to node.exe for the service, or null. */
+export function findNodeExe(): string | null {
+  if (process.env.RSS_NODE_PATH) {
+    const p = path.resolve(process.env.RSS_NODE_PATH);
+    if (fs.existsSync(p)) return p;
+  }
+  // Dev mode (tsx / npm scripts): the current process is node itself.
+  if (path.basename(process.execPath).toLowerCase() === 'node.exe') {
+    return process.execPath;
+  }
+  // PATH lookup
+  const pathVar = process.env.PATH ?? '';
+  for (const dir of pathVar.split(path.delimiter)) {
+    if (!dir) continue;
+    const exe = path.join(dir, 'node.exe');
+    if (fs.existsSync(exe)) return exe;
+  }
+  // Common install locations
+  for (const c of [
+    '%ProgramFiles%\\nodejs\\node.exe',
+    '%ProgramFiles(x86)%\\nodejs\\node.exe',
+    '%LOCALAPPDATA%\\Programs\\nodejs\\node.exe',
+    '%LOCALAPPDATA%\\nodejs\\node.exe',
+  ]) {
+    const p = expandEnv(c);
+    if (p && fs.existsSync(p)) return p;
+  }
+  return null;
+}
+
+function isServiceRoot(dir: string): boolean {
+  return (
+    fs.existsSync(path.join(dir, 'package.json')) &&
+    fs.existsSync(path.join(dir, 'scripts', 'keep_alive.cjs'))
+  );
+}
+
+/**
+ * Where the RSS server lives (must contain package.json + scripts/keep_alive.cjs).
+ * Resolution: RSS_SERVER_ROOT env → current dir → next to the installer exe.
+ */
+export function findServiceRoot(): string | null {
+  if (process.env.RSS_SERVER_ROOT) {
+    const p = path.resolve(process.env.RSS_SERVER_ROOT);
+    if (isServiceRoot(p)) return p;
+  }
+  for (const candidate of [process.cwd(), path.dirname(path.dirname(process.execPath))]) {
+    if (isServiceRoot(candidate)) return candidate;
+  }
+  return null;
+}
+
+/** Command to run in an elevated prompt to register the service manually. */
+export function serviceCreateCommand(name: string, nodeExe: string, script: string): string {
+  const binPath = `"${nodeExe}" "${script}"`;
+  return (
+    `sc create ${name} binPath= "${binPath.replace(/"/g, '\\"')}" ` +
+    `start= auto DisplayName= "${SERVICE_DISPLAY_NAME.replace(/"/g, '\\"')}"`
+  );
+}
+
+/**
+ * Register the RSS Sync server as a Windows service when one is not present.
+ * Pushes actions/next-steps; never throws.
+ */
+function ensureServerService(opts: InstallOptions, actions: Action[], nextSteps: string[]): void {
+  const ok = (m: string) => actions.push({ level: 'ok', message: m });
+  const warn = (m: string) => actions.push({ level: 'warn', message: m });
+  const info = (m: string) => actions.push({ level: 'info', message: m });
+  const skip = (m: string) => actions.push({ level: 'skip', message: m });
+
+  if (opts.installService === false) {
+    skip('Windows service: skipped (--no-service).');
+    return;
+  }
+  if (process.platform !== 'win32') {
+    skip('Windows service: skipped (not Windows).');
+    return;
+  }
+
+  const name = serviceName();
+  const dryRun = !!opts.dryRun;
+  const runner = opts.serviceRunner ?? defaultServiceRunner;
+
+  if (dryRun) {
+    info(`Windows service: would register "${name}" if it is missing (runs the RSS server at boot).`);
+    return;
+  }
+
+  const state = queryService(name, runner);
+  if (state.present) {
+    skip(`Windows service: "${name}" already registered${state.running ? ' and running' : ''} — nothing to do.`);
+    return;
+  }
+  if (state.detail) {
+    warn(`Windows service: could not check for "${name}" (${state.detail}).`);
+  }
+
+  const nodeExe = findNodeExe();
+  const root = findServiceRoot();
+  if (!nodeExe || !root) {
+    warn(
+      `Windows service: cannot register "${name}" — node.exe: ${nodeExe ?? 'not found'}, ` +
+        `server root: ${root ?? 'not found'}. Register it manually in an elevated prompt: ` +
+        `sc create ${name} binPath= "<node.exe> <root>\\scripts\\keep_alive.cjs" start= auto`
+    );
+    return;
+  }
+
+  const script = path.join(root, 'scripts', 'keep_alive.cjs');
+  if (!fs.existsSync(script)) {
+    warn(`Windows service: ${script} not found — cannot register "${name}".`);
+    return;
+  }
+
+  const createCmd = serviceCreateCommand(name, nodeExe, script);
+  const res = runner([
+    'create',
+    name,
+    'binPath=',
+    `"${nodeExe}" "${script}"`,
+    'start=',
+    'auto',
+    'DisplayName=',
+    SERVICE_DISPLAY_NAME,
+  ]);
+  if (!res.ok) {
+    actions.push({
+      level: 'error',
+      message:
+        `Windows service: could not register "${name}" ` +
+        `(${(res.stderr || res.stdout).trim() || `sc.exe exited with code ${res.code}`}). ` +
+        `Run as administrator: ${createCmd}`,
+    });
+    nextSteps.push(`Open an elevated prompt and run: ${createCmd}`);
+    return;
+  }
+  ok(`Windows service: registered "${name}" (auto start at boot, runs ${script}).`);
+
+  const startRes = runner(['start', name]);
+  if (startRes.ok) {
+    ok(`Windows service: started "${name}".`);
+  } else {
+    info(`Windows service: registered but could not be started now — it will start at next boot (or run: sc start ${name}).`);
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Status
 // ---------------------------------------------------------------------------
 
@@ -584,6 +815,11 @@ export function status(opts: InstallOptions = {}): StatusReport {
     loader = { present: false, kind: 'none', programDir: null, programFilesInstalled: false, profileFilesInstalled: false, notes: [] };
   }
 
+  const service =
+    process.platform === 'win32'
+      ? { name: serviceName(), ...queryService(serviceName(), opts.serviceRunner ?? defaultServiceRunner) }
+      : { name: serviceName(), present: false, running: false };
+
   const nextSteps: string[] = [];
   if (target) {
     nextSteps.push('Restart Zen for changes to take effect.');
@@ -601,7 +837,7 @@ export function status(opts: InstallOptions = {}): StatusReport {
     nextSteps.push(error);
   }
 
-  return { appRoot: discovery.appRoot, zenFound: discovery.zenFound, profiles: discovery.profiles, target, loader, engine, mod, prefs, nextSteps };
+  return { appRoot: discovery.appRoot, zenFound: discovery.zenFound, profiles: discovery.profiles, target, loader, engine, mod, prefs, service, nextSteps };
 }
 
 // ---------------------------------------------------------------------------
@@ -616,13 +852,22 @@ export function install(opts: InstallOptions = {}): InstallReport {
   const nextSteps: string[] = [];
 
   const discovery = discoverProfiles(opts.profileRoot);
-  const { profiles, error } = resolveTarget(discovery, opts);
-  if (profiles.length === 0) {
-    return { target: null, dryRun, actions: [{ level: 'error', message: error ?? 'No profiles to install into.' }], nextSteps };
-  }
 
   if (dryRun) {
     actions.push({ level: 'info', message: 'DRY RUN — nothing will be written.' });
+  }
+
+  // --- Windows service (RSS Sync server) ----------------------------------
+  ensureServerService(opts, actions, nextSteps);
+
+  const { profiles, error } = resolveTarget(discovery, opts);
+  if (profiles.length === 0) {
+    return {
+      target: null,
+      dryRun,
+      actions: [...actions, { level: 'error', message: error ?? 'No profiles to install into.' }],
+      nextSteps,
+    };
   }
 
   const ok = (m: string) => actions.push({ level: 'ok', message: m });
@@ -723,12 +968,11 @@ export function install(opts: InstallOptions = {}): InstallReport {
     const set = prefsSetInUserJs(profile.dir);
     const missing = ENGINE_PREFS.filter((p) => !set.includes(p));
     info(
-      'Prefs: left to you (installer never writes user.js/prefs.js).' +
-        (missing.length
-          ? ` Set manually in about:config if your server is not http://localhost:3000: ${missing.join(', ')}`
-          : ' All engine prefs are already present in user.js.')
+      missing.length
+        ? 'If your server runs at a different address than http://localhost:3000, set it in Zen: Settings → Mods → RSS Sync.'
+        : 'Your server address is already configured in Zen — nothing to set.'
     );
-    nextSteps.push('Set the engine prefs in about:config or Zen Settings → Mods → RSS Sync if your server is not http://localhost:3000.');
+    nextSteps.push('If your server runs at a different address than http://localhost:3000, set it in Zen: Settings → Mods → RSS Sync.');
     } catch (err) {
       actions.push({ level: 'error', message: `${profile.name}: ${(err as Error).message}` });
     }
@@ -823,7 +1067,7 @@ export function uninstall(opts: InstallOptions = {}): InstallReport {
     }
 
     // Loader — kept on purpose (other scripts may depend on it).
-    info('Loader: kept in place (other user scripts may depend on it). To remove it too, delete the loader files manually — see zen/loader/README.md.');
+    info('The script loader was left in place so your other Zen scripts keep working.');
     } catch (err) {
       actions.push({ level: 'error', message: `${profile.name}: ${(err as Error).message}` });
     }
