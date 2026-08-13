@@ -113,6 +113,8 @@ export interface InstallOptions {
   serverRoot?: string;
   /** sc.exe runner override (tests inject a fake so no admin rights are needed). */
   serviceRunner?: ServiceRunner;
+  /** Override for the "is a Zen browser process running" check (tests inject a fake instead of probing tasklist). */
+  processCheck?: () => boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -287,14 +289,46 @@ export function parseInstallDefaults(text: string): string[] {
   return defaults;
 }
 
-export function isProfileRunning(profileDir: string): boolean {
-  return (
-    fs.existsSync(path.join(profileDir, 'parent.lock')) ||
-    fs.existsSync(path.join(profileDir, '.parentlock'))
-  );
+/** True when a tasklist dump contains a Zen browser main process (not helpers). */
+export function hasZenProcessInTasklist(output: string): boolean {
+  return /^"(zen\.exe|zen-twilight\.exe)"/im.test(output);
 }
 
-export function discoverProfiles(appRoot?: string): DiscoverResult {
+/** Whether any Zen browser process is currently running on this machine. */
+export function anyZenProcessRunning(): boolean {
+  if (process.platform !== 'win32') return false;
+  try {
+    const out = execFileSync('tasklist', ['/FO', 'CSV', '/NH'], {
+      encoding: 'utf8',
+      windowsHide: true,
+    });
+    return hasZenProcessInTasklist(out);
+  } catch {
+    // Can't tell — assume it might be running so we never write into a live profile.
+    return true;
+  }
+}
+
+/**
+ * A profile is "running" when its lock file is present AND a Zen browser
+ * process actually exists. The lock file survives unclean exits (crash,
+ * task-kill), so existence alone is a false positive — check the process list.
+ */
+export function isProfileRunning(
+  profileDir: string,
+  opts: { processCheck?: () => boolean } = {}
+): boolean {
+  const hasLock =
+    fs.existsSync(path.join(profileDir, 'parent.lock')) ||
+    fs.existsSync(path.join(profileDir, '.parentlock'));
+  if (!hasLock) return false;
+  return (opts.processCheck ?? anyZenProcessRunning)();
+}
+
+export function discoverProfiles(
+  appRoot?: string,
+  opts: { processCheck?: () => boolean } = {}
+): DiscoverResult {
   const root = appRoot ?? defaultAppRoot();
   if (!root) {
     return { appRoot: null, zenFound: false, profiles: [], error: 'Zen is only supported on Windows for this installer.' };
@@ -323,7 +357,7 @@ export function discoverProfiles(appRoot?: string): DiscoverResult {
       name: e.name,
       dir,
       isDefault: e.isDefault,
-      running: isProfileRunning(dir),
+      running: isProfileRunning(dir, opts),
     };
   });
 
@@ -869,7 +903,7 @@ function ensureServerService(opts: InstallOptions, actions: Action[], nextSteps:
 
 export function status(opts: InstallOptions = {}): StatusReport {
   const files = opts.files ?? readPackageFilesFromDisk();
-  const discovery = discoverProfiles(opts.profileRoot);
+  const discovery = discoverProfiles(opts.profileRoot, opts);
   const { profiles, error } = resolveTarget(discovery, opts);
   const target = profiles.length > 0 ? profiles[0] : null;
 
@@ -936,7 +970,7 @@ export function install(opts: InstallOptions = {}): InstallReport {
   const actions: Action[] = [];
   const nextSteps: string[] = [];
 
-  const discovery = discoverProfiles(opts.profileRoot);
+  const discovery = discoverProfiles(opts.profileRoot, opts);
 
   if (dryRun) {
     actions.push({ level: 'info', message: 'DRY RUN — nothing will be written.' });
@@ -1078,7 +1112,7 @@ export function uninstall(opts: InstallOptions = {}): InstallReport {
   const actions: Action[] = [];
   const nextSteps: string[] = [];
 
-  const discovery = discoverProfiles(opts.profileRoot);
+  const discovery = discoverProfiles(opts.profileRoot, opts);
   const { profiles, error } = resolveTarget(discovery, opts);
   if (profiles.length === 0) {
     return { target: null, dryRun, actions: [{ level: 'error', message: error ?? 'No profiles to uninstall from.' }], nextSteps };

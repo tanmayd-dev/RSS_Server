@@ -15,6 +15,7 @@ import {
   findNodeExe,
   findServiceRoot,
   findZenProgramDir,
+  hasZenProcessInTasklist,
   install,
   parseInstallDefaults,
   parseProfilesIni,
@@ -233,9 +234,36 @@ check('discovers profiles with running detection', () => {
   assert.strictEqual(d.profiles.length, 2);
   assert.strictEqual(d.profiles[0].isDefault, true);
   assert.strictEqual(d.profiles[0].running, false);
+  // a lock file alone (stale after an unclean exit) is NOT running…
   fs.writeFileSync(path.join(defaultProfile, 'parent.lock'), '');
-  assert.strictEqual(discoverProfiles(root).profiles[0].running, true);
+  assert.strictEqual(discoverProfiles(root, { processCheck: () => false }).profiles[0].running, false);
+  // …but it IS running when a Zen browser process actually exists.
+  assert.strictEqual(discoverProfiles(root, { processCheck: () => true }).profiles[0].running, true);
   fs.rmSync(root, { recursive: true, force: true });
+});
+
+check('hasZenProcessInTasklist matches only the browser main process', () => {
+  const sample = [
+    '"zen.exe","1234","Console","1","123,456 K"',
+    '"zen-install.exe","5678","Console","1","45,678 K"',
+    '"explorer.exe","9999","Console","1","10,000 K"',
+  ].join('\r\n');
+  assert.strictEqual(hasZenProcessInTasklist(sample), true, 'zen.exe matches');
+  assert.strictEqual(
+    hasZenProcessInTasklist('".\\zen.exe","1","Console","1","1 K"'),
+    false,
+    'a path prefix (\\zen.exe) is not the main process'
+  );
+  assert.strictEqual(
+    hasZenProcessInTasklist('\n"zen-twilight.exe","2","Console","1","2 K"\n'),
+    true,
+    'zen-twilight.exe matches'
+  );
+  assert.strictEqual(
+    hasZenProcessInTasklist('"zen-install.exe","3","Console","1","3 K"'),
+    false,
+    'the installer exe must not match'
+  );
 });
 
 check('install-section default wins over the Default=1 flag', () => {
@@ -357,7 +385,8 @@ check('zen-themes.json merge preserves other mods', () => {
 check('refuses to write into a running profile unless forced', () => {
   const { root, programDir, defaultProfile } = makeFakeZenTree();
   fs.writeFileSync(path.join(defaultProfile, '.parentlock'), '');
-  const r = install(optsFor(root, programDir));
+  // deterministic: pretend a Zen process is alive so the refusal is about the lock
+  const r = install(optsFor(root, programDir, { processCheck: () => true }));
   assert.ok(r.actions.some((a) => a.level === 'error' && a.message.includes('running')));
   assert.ok(!fs.existsSync(path.join(defaultProfile, 'chrome', 'JS')), 'nothing written');
   const rf = install(optsFor(root, programDir, { force: true }));
