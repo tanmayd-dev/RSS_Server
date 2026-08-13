@@ -3,10 +3,43 @@ import { prisma } from './db.js';
 import * as scraper from './scraper.js';
 import { HtmlConfig, FourChanConfig, YoutubeConfig, ScrapedFeedItem } from '../types.js';
 
+export interface UpdateFeedOptions {
+  /** Always re-fetch every source, ignoring TTL (explicit force refresh). */
+  force?: boolean;
+  /** TTL auto-refresh disabled: only fetch sources that have never been fetched. */
+  disabled?: boolean;
+}
+
+/**
+ * Stable dedup key for a source. Two sources are considered the same when they share
+ * type, normalized URL and config, so duplicate rows in one feed are fetched only once.
+ */
+function buildSourceDedupKey(source: FeedSource): string {
+  const url = (source.url || '').trim().replace(/\/+$/, '');
+  let configStr = '';
+  if (source.config) {
+    try {
+      const parsed = JSON.parse(source.config);
+      const sorted: Record<string, any> = {};
+      for (const key of Object.keys(parsed).sort()) {
+        sorted[key] = parsed[key];
+      }
+      configStr = JSON.stringify(sorted);
+    } catch {
+      configStr = source.config;
+    }
+  }
+  return `${source.type}|${url}|${configStr}`;
+}
+
 /**
  * Updates the feed cache by scraping/fetching each of its sources if the cache has expired based on dynamic TTL.
  */
-export async function updateFeedIfNeeded(feedId: string, ttlMinutes: number): Promise<Feed & { sources: FeedSource[]; items: FeedItem[] }> {
+export async function updateFeedIfNeeded(
+  feedId: string,
+  ttlMinutes: number,
+  opts: UpdateFeedOptions = {}
+): Promise<Feed & { sources: FeedSource[]; items: FeedItem[] }> {
   const feed = await prisma.feed.findUnique({
     where: { id: feedId },
     include: { sources: true, items: { include: { source: true } } },
@@ -19,20 +52,40 @@ export async function updateFeedIfNeeded(feedId: string, ttlMinutes: number): Pr
   const now = new Date();
   let updatedAnySource = false;
 
+  // Cache fetched results per run so duplicate sources in the same feed are only fetched once.
+  const fetchedThisRun = new Map<string, { items: ScrapedFeedItem[]; resolvedUrl: string | null }>();
+
   for (const source of feed.sources) {
     const lastFetched = source.lastFetched;
-    const isExpired = !lastFetched || (now.getTime() - lastFetched.getTime()) / (1000 * 60) >= ttlMinutes;
+    let isExpired: boolean;
+    if (opts.force) {
+      isExpired = true;
+    } else if (opts.disabled) {
+      // Auto-refresh disabled (Zen-only feeds): only fetch sources never fetched before.
+      isExpired = !lastFetched;
+    } else {
+      isExpired = !lastFetched || (now.getTime() - lastFetched.getTime()) / (1000 * 60) >= ttlMinutes;
+    }
 
     if (!isExpired) {
       continue;
     }
 
-    console.log(`Source ${source.id} (${source.type}) expired. Fetching fresh items...`);
+    const dedupKey = buildSourceDedupKey(source);
+    const cached = dedupKey ? fetchedThisRun.get(dedupKey) : undefined;
+
     let resolvedUrl = source.resolvedUrl;
     let itemsToSave: ScrapedFeedItem[] = [];
 
     try {
-      switch (source.type) {
+      if (cached) {
+        // Same source already fetched this run — reuse the results instead of a second network hit.
+        console.log(`Source ${source.id} (${source.type}) is a duplicate of an already-fetched source in this feed. Reusing items.`);
+        resolvedUrl = cached.resolvedUrl ?? source.resolvedUrl;
+        itemsToSave = cached.items;
+      } else {
+        console.log(`Source ${source.id} (${source.type}) expired. Fetching fresh items...`);
+        switch (source.type) {
         case 'rss':
           resolvedUrl = source.url;
           const rssParser = new (await import('rss-parser')).default();
@@ -128,6 +181,11 @@ export async function updateFeedIfNeeded(feedId: string, ttlMinutes: number): Pr
         default:
           console.error(`Unsupported source type: ${source.type}`);
           continue;
+        }
+
+        if (dedupKey) {
+          fetchedThisRun.set(dedupKey, { items: itemsToSave, resolvedUrl });
+        }
       }
 
       // Save/Upsert new items to the database

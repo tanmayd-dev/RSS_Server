@@ -1,0 +1,38 @@
+/* ==========================================================================
+   RSS Sync mod — visual layer for live folders created by the rss-sync uc.js
+   engine. Install the mod (chrome.css + preferences.json) alongside the
+   engine script; the engine sets rss-sync-feed-id on folders it manages.
+   ========================================================================== */
+
+/* Small "synced" indicator on folders managed by RSS Sync. */
+zen-folder[rss-sync-feed-id] .tab-group-label-container::after {
+  content: "";
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #ff5722; /* RSS orange */
+  margin-inline-start: 5px;
+  flex-shrink: 0;
+}
+
+/* Give the folder icon a subtle RSS tint so managed folders stand out. */
+zen-folder[rss-sync-feed-id] .tab-group-folder-icon svg .icon image {
+  filter: saturate(1.2);
+}
+
+/* Highlight a folder briefly while it is being refreshed (set via JS). */
+zen-folder[rss-sync-refreshing] .tab-group-label-container {
+  animation: rss-sync-pulse 0.8s ease-in-out infinite;
+}
+
+@keyframes rss-sync-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.45; }
+}
+
+/* Respect reduced-motion preferences. */
+@media (prefers-reduced-motion: reduce) {
+  zen-folder[rss-sync-refreshing] .tab-group-label-container {
+    animation: none;
+  }
+}

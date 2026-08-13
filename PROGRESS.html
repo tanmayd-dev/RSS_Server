@@ -1,0 +1,293 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>RSS Aggregator ↔ Zen Browser — Implementation Progress</title>
+<style>
+  :root {
+    --bg: #fafafa;
+    --fg: #1f2933;
+    --muted: #6b7280;
+    --accent: #2563eb;
+    --border: #e5e7eb;
+    --code-bg: #f3f4f6;
+    --ok: #16a34a;
+    --next: #d97706;
+    --planned: #6b7280;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--fg);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    line-height: 1.6;
+    font-size: 15px;
+  }
+  .container { max-width: 860px; margin: 0 auto; padding: 40px 28px 80px; }
+  h1 { font-size: 1.8em; margin: 0 0 4px; letter-spacing: -0.02em; }
+  h2 {
+    font-size: 1.3em;
+    margin-top: 2.2em;
+    padding-bottom: 6px;
+    border-bottom: 1px solid var(--border);
+  }
+  h3 { font-size: 1.05em; margin-top: 1.6em; }
+  p { margin: 8px 0; }
+  code {
+    background: var(--code-bg);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 1px 5px;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 0.88em;
+  }
+  pre {
+    background: #0f172a;
+    color: #e2e8f0;
+    border-radius: 8px;
+    padding: 14px 16px;
+    overflow-x: auto;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 0.85em;
+    line-height: 1.5;
+  }
+  pre code { background: none; border: none; padding: 0; color: inherit; }
+  table { width: 100%; border-collapse: collapse; margin: 14px 0; font-size: 0.92em; }
+  th, td { text-align: left; padding: 8px 12px; border: 1px solid var(--border); vertical-align: top; }
+  th { background: #f3f4f6; font-weight: 600; }
+  ul, ol { padding-left: 1.4em; margin: 8px 0; }
+  li { margin: 3px 0; }
+  blockquote {
+    margin: 16px 0;
+    padding: 12px 16px;
+    background: #fffbeb;
+    border-left: 4px solid #f59e0b;
+    border-radius: 0 6px 6px 0;
+    color: #78350f;
+  }
+  blockquote p { margin: 0; }
+  .badge {
+    display: inline-block;
+    padding: 2px 9px;
+    border-radius: 999px;
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.02em;
+    vertical-align: middle;
+  }
+  .badge.done { background: #dcfce7; color: #166534; }
+  .badge.next { background: #fef3c7; color: #92400e; }
+  .badge.planned { background: #e5e7eb; color: #374151; }
+  .step { border: 1px solid var(--border); border-radius: 10px; padding: 4px 20px 14px; margin-top: 18px; background: #fff; }
+  .step h2 { border: none; margin-top: 14px; }
+  .muted { color: var(--muted); }
+</style>
+</head>
+<body>
+<div class="container">
+
+<h1>RSS Aggregator ↔ Zen Browser — Implementation Progress</h1>
+<p class="muted"><em>Living document. Updated after <strong>every</strong> implementation step with: what changed, files touched, how it was verified, and the next step.</em></p>
+
+<h2>Status at a glance</h2>
+<table>
+  <thead><tr><th>Step</th><th>Description</th><th>Status</th></tr></thead>
+  <tbody>
+    <tr><td>1</td><td>Server: <code>?ttl=</code> honored, <code>ttl: 0</code> = auto-refresh disabled, source dedup + offline tests</td><td><span class="badge done">✅ Done</span></td></tr>
+    <tr><td>2</td><td>Zen engine prototype (<code>uc.js</code>) + package folders (<code>mod/</code> + <code>uc/</code>) + smoke test</td><td><span class="badge done">✅ Done</span></td></tr>
+    <tr><td>3</td><td>Frontend "Zen integration" panel (Zen URL copy, Zen-only badge, install helper)</td><td><span class="badge done">✅ Done</span></td></tr>
+    <tr><td>4</td><td>Engine hardening, install checklist, publish prep</td><td><span class="badge done">✅ Done</span></td></tr>
+  </tbody>
+</table>
+
+<h2>Plan overview</h2>
+<ul>
+  <li><strong>Step 1 — Server foundations.</strong> Make <code>GET /feeds/:id</code> honor <code>?ttl=</code> (so Zen can force server refreshes with <code>?ttl=0</code>), let feeds disable auto-refresh (<code>ttl: 0</code> = Zen-only), and dedupe identical sources inside one feed.</li>
+  <li><strong>Step 2 — Zen engine + package layout.</strong> A <code>uc.js</code> script (fx-autoconfig/Sine) that mirrors server feeds as native Zen Live Folders (one folder per feed, subscribed to <code>{server}/feeds/{id}?ttl=0</code>), plus a CSS mod for visuals/settings, in a <code>zen/</code> folder.</li>
+  <li><strong>Step 3 — Frontend integration.</strong> A "Zen" panel in the RSS Aggregator frontend: per-feed copy-Zen-URL, "Zen-only" badge when auto-refresh is off, install instructions.</li>
+  <li><strong>Step 4 — Harden &amp; ship.</strong> Manual install checklist + real-profile validation, engine hardening (multi-window, manual-rename detection), publish the mod.</li>
+</ul>
+
+<div class="step">
+<h2>Step 1 — Server: TTL, Zen-only mode &amp; dedup <span class="badge done">✅ Done</span></h2>
+<p class="muted"><strong>Date:</strong> 2026-08-13 &nbsp;·&nbsp; <strong>Goal:</strong> make the server behave correctly as a Zen live-folder backend.</p>
+
+<h3>Changes</h3>
+<ul>
+  <li><code>src/services/feedManager.ts</code>
+    <ul>
+      <li><code>updateFeedIfNeeded(feedId, ttl, opts)</code> gains <code>opts.force</code> (always re-fetch — explicit refresh) and <code>opts.disabled</code> (only fetch sources never fetched — Zen-only mode).</li>
+      <li>Per-run <strong>source dedup</strong>: sources with the same type + normalized URL + config are fetched <strong>once</strong>; duplicates reuse the results (items, <code>resolvedUrl</code>) and stay in sync.</li>
+    </ul>
+  </li>
+  <li><code>src/routes.ts</code>
+    <ul>
+      <li><code>GET /feeds/:id</code> now honors <code>?ttl=</code> (the comment claimed it, the code ignored it): <code>?ttl=0</code> forces a refresh on every call; <code>?ttl=N</code> uses that expiry; no param → stored TTL.</li>
+      <li>Stored <strong><code>ttl: 0</code> disables auto-refresh</strong> (Zen-only): cache is served, only refreshed on explicit demand (<code>?ttl=0</code> / <code>POST /api/feeds/:id/refresh</code>) or first fetch.</li>
+      <li>TTL parsing fixed: <code>0</code> can now be saved (previously the falsy check silently defaulted to 15) and is validated as a non-negative integer.</li>
+      <li><code>POST /api/feeds/:id/refresh</code> uses explicit <code>force</code>.</li>
+    </ul>
+  </li>
+  <li><code>frontend/src/App.tsx</code>
+    <ul>
+      <li>TTL dropdown: added <strong>"Off — no auto-refresh (Zen-only)"</strong>.</li>
+      <li>Feed table shows <strong>"Off (Zen-only)"</strong> for <code>ttl: 0</code> feeds.</li>
+    </ul>
+  </li>
+  <li><code>scripts/test_endpoints.ts</code> — new offline section (local RSS source server, no external network): stored <code>ttl: 0</code> disables auto-refresh but <code>?ttl=0</code> still forces; <code>?ttl=0</code> forces every call while unexpired TTL serves cache; duplicate sources cause exactly one upstream fetch with deduped RSS output.</li>
+</ul>
+
+<h3>Verification</h3>
+<ul>
+  <li><code>npx tsc --noEmit</code> — pass</li>
+  <li><code>npm run test-endpoints</code> — <strong>All Tests Passed</strong> (new offline TTL/dedup checks included)</li>
+</ul>
+</div>
+
+<div class="step">
+<h2>Step 2 — Zen engine prototype &amp; package folders <span class="badge done">✅ Done</span></h2>
+<p class="muted"><strong>Date:</strong> 2026-08-13 &nbsp;·&nbsp; <strong>Goal:</strong> prove the Zen-side mechanism: mirror feeds as live folders.</p>
+
+<h3>Changes</h3>
+<p>New <strong><code>zen/</code></strong> package (separate folders for the deliverables):</p>
+<pre><code>zen/
+├── README.md              — overview, install + config documentation
+├── mod/                   — distributable Zen mod (visual layer; CSS-only)
+│   ├── chrome.css         — synced badge, RSS-orange dot, refresh pulse
+│   ├── preferences.json   — server_url, auto_sync, poll_interval, folder_interval, max_items
+│   └── zenMod.json        — marketplace metadata
+└── uc/                    — the engine (fx-autoconfig / Sine userChrome.js)
+    ├── rss-sync.uc.mjs    — polls GET /api/feeds, reconciles live folders
+    └── import.uc.mjs      — fx-autoconfig import aggregator</code></pre>
+<ul>
+  <li><code>zen/uc/rss-sync.uc.mjs</code> — the engine (prototype):
+    <ul>
+      <li>Runs only in browser windows; waits for <code>ZenLiveFoldersManager</code> to restore state and pick its synced window (single-window guard).</li>
+      <li>Polls <code>GET {server}/api/feeds</code> (default 15 s), reconciles:
+        <ul>
+          <li><strong>Create</strong> one live folder per feed via <code>gZenFolders.createFolder</code> + <code>nsRssLiveFolderProvider</code>, registered in <code>manager.liveFolders</code>, URL <code>{server}/feeds/{feedId}?ttl=0</code> (so every Zen refresh forces a server refresh).</li>
+          <li><strong>Rename</strong> folder to match the server feed name.</li>
+          <li><strong>Delete</strong> folder when the feed is removed (<code>manager.deleteFolder(id, true)</code>).</li>
+        </ul>
+      </li>
+      <li>Config from the mod's prefs (<code>mod.rsssync.*</code> in <code>Services.prefs</code>) with built-in defaults; feature-detected — logs and idles if a Zen update breaks an internal API.</li>
+      <li>Only manages folders whose URL points at the configured server.</li>
+    </ul>
+  </li>
+  <li><code>scripts/test_uc_engine.mjs</code> (<code>npm run test-uc</code>) — Node smoke test that stubs the Zen chrome APIs and runs the real script's reconcile logic: create one-per-feed with <code>?ttl=0</code> + correct config, rename, delete.</li>
+  <li><code>package.json</code> — added <code>test-uc</code> script.</li>
+</ul>
+
+<h3>Verification</h3>
+<ul>
+  <li><code>node --check</code> on the engine + JSON validation of mod files — pass</li>
+  <li><code>npm run test-uc</code> — <strong>pass</strong> (create / rename / delete asserted)</li>
+  <li><code>npx tsc --noEmit</code> — pass · <code>npm run test-endpoints</code> — <strong>All Tests Passed</strong></li>
+</ul>
+
+<h3>Caveats (documented in <code>zen/README.md</code>)</h3>
+<ul>
+  <li>Relies on Zen <strong>internal</strong> APIs (fragile across Zen releases; script degrades gracefully).</li>
+  <li>Single-window: reconcile loop runs in Zen's first synced window.</li>
+  <li>Engine renames override manual folder renames.</li>
+</ul>
+</div>
+
+<div class="step">
+<h2>Step 3 — Frontend "Zen integration" panel <span class="badge done">✅ Done</span></h2>
+<p class="muted"><strong>Date:</strong> 2026-08-13 &nbsp;·&nbsp; <strong>Goal:</strong> make the Zen integration visible and usable from the RSS Aggregator frontend.</p>
+
+<h3>Changes</h3>
+<ul>
+  <li><code>frontend/src/App.tsx</code>
+    <ul>
+      <li><strong>Per-feed "Copy Zen URL"</strong> button in the RSS URL cell — copies <code>{origin}/feeds/{feedId}?ttl=0</code> (the exact URL for a Zen live folder) with a green check feedback; the URL cell was widened to fit both copy buttons.</li>
+      <li><strong>"Zen-only" badge</strong> in the Cache Refresh column for <code>ttl: 0</code> feeds (orange pill with a Zap icon + tooltip explaining Zen's folder refresh drives updates).</li>
+      <li><strong>Zen Browser Integration panel</strong> below the feed table (collapsible):
+        <ul>
+          <li>server URL (with copy button) + explanation of the <code>/feeds/&lt;id&gt;?ttl=0</code> mapping,</li>
+          <li>status: feeds → live folders count, how many are Zen-only,</li>
+          <li>one-time install steps (fx-autoconfig, copy <code>zen/uc/*</code>, install the mod, restart), with a pointer to <code>zen/README.md</code>.</li>
+        </ul>
+      </li>
+      <li>Small <code>copyText</code> helper + <code>zenOnlyCount</code> derived value.</li>
+    </ul>
+  </li>
+</ul>
+
+<h3>Verification</h3>
+<ul>
+  <li><code>npx tsc --noEmit</code> (frontend) — pass · <code>npm run build</code> (production build) — pass</li>
+  <li><strong>Live preview</strong> against the running server: copy button shows check feedback; with a feed set to <code>ttl: 0</code> the "Zen-only" badge renders and the panel counts update.</li>
+  <li>Note: the running server previously predated step 1 (its <code>ttl: 0</code> was silently saved as <code>15</code>). Rebuilt <code>dist/</code> and restarted the keep-alive server so the backend runs the step-1 code; the tested feed's TTL was restored to its original value afterwards.</li>
+</ul>
+</div>
+
+<div class="step">
+<h2>Step 4 — Harden &amp; ship <span class="badge done">✅ Done</span></h2>
+<p class="muted"><strong>Date:</strong> 2026-08-13 &nbsp;·&nbsp; <strong>Goal:</strong> move from prototype to a validated, installable integration.</p>
+
+<h3>Changes</h3>
+<ul>
+  <li><code>zen/uc/rss-sync.uc.mjs</code> — engine hardening:
+    <ul>
+      <li><strong>Multi-window:</strong> per-tick window election (<code>manager.window === win</code>) replaces the one-time gate, so the reconcile loop takes over automatically when windows open, close, or the first synced window changes. Folders sync across windows natively via <code>ZenWindowSync</code>.</li>
+      <li><strong>Manual renames preserved:</strong> <code>data-rss-sync-name</code> tracks the last name the engine applied; the engine only renames a folder whose current name matches that record. After a restart (record gone) folders whose name matches the server are re-adopted; anything else is treated as user-owned and left alone.</li>
+      <li><strong>Refresh-state surface:</strong> folders carry <code>rss-sync-refreshing</code> while a fetch is in flight and <code>data-rss-sync-last-fetched</code> afterwards (styled by the mod's <code>chrome.css</code>).</li>
+    </ul>
+  </li>
+  <li><code>scripts/test_uc_engine.mjs</code> — extended to cover: create (URL/config/attrs), refresh-state attributes, server rename, <strong>manual-rename preservation</strong>, <strong>window election</strong>, and delete.</li>
+  <li><code>zen/INSTALL_CHECKLIST.md</code> (new) — manual install + validation checklist: loader, engine, mod install, features 1–3, restart/multi-window resilience, uninstall, and publishing steps.</li>
+  <li><code>zen/README.md</code> — layout and notes updated (multi-window, manual renames, refresh state, publishing note).</li>
+</ul>
+
+<h3>Verification</h3>
+<ul>
+  <li><code>node --check</code> — pass · <code>npm run test-uc</code> — <strong>pass</strong> (all 6 hardened scenarios)</li>
+  <li><code>npx tsc --noEmit</code> (server + frontend) — pass · <code>npm run test-endpoints</code> — <strong>All Tests Passed</strong></li>
+</ul>
+
+<h3>Remaining (user-side, documented in the checklist)</h3>
+<ul>
+  <li>Real-profile validation via <code>zen/INSTALL_CHECKLIST.md</code>.</li>
+  <li>Publish the mod: replace <code>zenMod.json</code> placeholder URLs with hosted HTTPS assets and submit.</li>
+</ul>
+</div>
+
+<div class="step">
+<h2>Follow-up — Real links for install steps <span class="badge done">✅ Done</span></h2>
+<p class="muted"><strong>Date:</strong> 2026-08-13 &nbsp;·&nbsp; <strong>Goal:</strong> replace generic "install a loader" text with concrete, working URLs.</p>
+
+<h3>Changes</h3>
+<ul>
+  <li><code>frontend/src/App.tsx</code> — the Zen panel's install steps now link to the real tools:
+    <ul>
+      <li><a href="https://github.com/MrOtherGuy/fx-autoconfig">fx-autoconfig</a></li>
+      <li><a href="https://github.com/CosmoCreeper/Sine">Sine</a></li>
+      <li><a href="https://zen-browser.app/mods/">Zen Mods marketplace</a></li>
+    </ul>
+  </li>
+  <li><code>zen/README.md</code> and <code>zen/INSTALL_CHECKLIST.md</code> — same links added to the docs.</li>
+</ul>
+
+<h3>Verification</h3>
+<ul>
+  <li><code>npx tsc --noEmit</code> (frontend) — pass · <code>npm run build</code> (production build) — pass</li>
+</ul>
+</div>
+
+<div class="step">
+<h2>🎉 Plan complete</h2>
+<p>All four steps are done. Features 1–3 (live folder per feed, best-effort sync with Zen's refresh, force update server-then-Zen) are implemented across the server, the Zen engine, and the frontend, with automated tests plus a manual checklist for real-profile validation.</p>
+<p><strong>Next (user-side, documented in <code>zen/INSTALL_CHECKLIST.md</code>):</strong></p>
+<ol>
+  <li>Real-profile install + validation (loader → engine → mod → features 1–3).</li>
+  <li>Publish the mod: replace <code>zenMod.json</code> placeholder URLs with hosted HTTPS assets and submit.</li>
+</ol>
+</div>
+
+</div>
+</body>
+</html>

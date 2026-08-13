@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { 
   Sun, Moon, Trash2, Copy, Check, Plus, 
   RefreshCw, AlertCircle, Link, Rss, Youtube, 
-  MessageSquare, Globe, X, ExternalLink, Settings
+  MessageSquare, Globe, X, ExternalLink, Settings, Zap, ChevronDown
 } from 'lucide-react';
 import { Feed, FeedType, ScrapedFeedItem } from './types.js';
 
@@ -54,6 +54,9 @@ export default function App() {
   };
 
   const [copiedFeedId, setCopiedFeedId] = useState<string | null>(null);
+  const [copiedZenFeedId, setCopiedZenFeedId] = useState<string | null>(null);
+  const [serverUrlCopied, setServerUrlCopied] = useState<boolean>(false);
+  const [zenPanelOpen, setZenPanelOpen] = useState<boolean>(true);
   const [refreshingFeedId, setRefreshingFeedId] = useState<string | null>(null);
   const [saving, setSaving] = useState<boolean>(false);
 
@@ -245,14 +248,21 @@ export default function App() {
     setIsModalOpen(true);
   };
 
+  // Copy helper with temporary check feedback
+  const copyText = (text: string, onCopied: () => void) => {
+    navigator.clipboard.writeText(text);
+    onCopied();
+    setTimeout(onCopied, 2000);
+  };
+
   // Copy feed link helper
   const handleCopyLink = (feedId: string) => {
-    const base = window.location.origin;
-    const link = `${base}/feeds/${feedId}`;
-    
-    navigator.clipboard.writeText(link);
-    setCopiedFeedId(feedId);
-    setTimeout(() => setCopiedFeedId(null), 2000);
+    copyText(`${window.location.origin}/feeds/${feedId}`, () => setCopiedFeedId(feedId));
+  };
+
+  // Copy the Zen live-folder URL (?ttl=0 forces a server refresh on every Zen poll)
+  const handleCopyZenLink = (feedId: string) => {
+    copyText(`${window.location.origin}/feeds/${feedId}?ttl=0`, () => setCopiedZenFeedId(feedId));
   };
 
   // Format date helper
@@ -265,6 +275,9 @@ export default function App() {
       minute: '2-digit',
     });
   };
+
+  // Number of feeds with auto-refresh disabled (Zen-only mode)
+  const zenOnlyCount = feeds.filter((feed) => feed.ttl === 0).length;
 
   // Badge mapping
   const getBadgeClass = (type: FeedType) => {
@@ -428,22 +441,39 @@ export default function App() {
                           </div>
                         )}
                       </td>
-                      <td className="px-6 py-4 align-middle text-center text-gray-650 dark:text-gray-350 font-medium">
-                        {feed.ttl < 60 ? `${feed.ttl} mins` : `${feed.ttl / 60} hour${feed.ttl / 60 > 1 ? 's' : ''}`}
-                      </td>
-                      <td className="px-6 py-4 align-middle text-center">
-                        <div className="flex items-center space-x-1 bg-gray-50 dark:bg-gray-950 p-1.5 rounded-lg border border-gray-200 dark:border-gray-800 max-w-[260px] mx-auto">
-                          <span className="text-xs truncate font-mono text-gray-650 dark:text-gray-450 flex-1">
-                            {`${window.location.origin}/feeds/${feed.id}`}
-                          </span>
-                          <button 
-                            onClick={() => handleCopyLink(feed.id)}
-                            className="p-1 rounded bg-white hover:bg-gray-100 dark:bg-gray-800 dark:hover:bg-gray-700 border border-gray-200 dark:border-gray-700 text-gray-500 dark:text-gray-400 hover:text-indigo-600 transition"
-                            title="Copy RSS URL"
+                      <td className="px-6 py-4 align-middle text-center font-medium">
+                        {feed.ttl === 0 ? (
+                          <span 
+                            className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-semibold leading-none bg-orange-100 text-orange-700 dark:bg-orange-900/30 dark:text-orange-300"
+                            title="Auto-refresh disabled — Zen's live folder refresh (?ttl=0) drives updates."
                           >
-                            {copiedFeedId === feed.id ? <Check className="w-3.5 h-3.5 text-green-600" /> : <Copy className="w-3.5 h-3.5" />}
-                          </button>
-                        </div>
+                            <Zap className="w-3 h-3 mr-1" /> Zen-only
+                          </span>
+                        ) : feed.ttl < 60 ? (
+                          <span className="text-gray-650 dark:text-gray-350">{feed.ttl} mins</span>
+                        ) : (
+                          <span className="text-gray-650 dark:text-gray-350">{feed.ttl / 60} hour{feed.ttl / 60 > 1 ? 's' : ''}</span>
+                        )}
+                      </td>
+                      <td className="px-6 py-4 align-middle text-center">                          <div className="flex items-center space-x-1 bg-gray-50 dark:bg-gray-950 p-1.5 rounded-lg border border-gray-200 dark:border-gray-800 max-w-[320px] mx-auto">
+                            <span className="text-xs truncate font-mono text-gray-650 dark:text-gray-450 flex-1">
+                              {`${window.location.origin}/feeds/${feed.id}`}
+                            </span>
+                            <button 
+                              onClick={() => handleCopyLink(feed.id)}
+                              className="p-1 rounded bg-white hover:bg-gray-100 dark:bg-gray-800 dark:hover:bg-gray-700 border border-gray-200 dark:border-gray-700 text-gray-500 dark:text-gray-400 hover:text-indigo-600 transition"
+                              title="Copy RSS URL"
+                            >
+                              {copiedFeedId === feed.id ? <Check className="w-3.5 h-3.5 text-green-600" /> : <Copy className="w-3.5 h-3.5" />}
+                            </button>
+                            <button 
+                              onClick={() => handleCopyZenLink(feed.id)}
+                              className="p-1 rounded bg-white hover:bg-gray-100 dark:bg-gray-800 dark:hover:bg-gray-700 border border-gray-200 dark:border-gray-700 text-gray-500 dark:text-gray-400 hover:text-orange-500 transition"
+                              title="Copy Zen Live Folder URL (?ttl=0 — refreshes server on every Zen poll)"
+                            >
+                              {copiedZenFeedId === feed.id ? <Check className="w-3.5 h-3.5 text-green-600" /> : <Zap className="w-3.5 h-3.5" />}
+                            </button>
+                          </div>
                       </td>
                       <td className="px-6 py-4 align-middle text-center text-xs text-gray-500 dark:text-gray-400">
                         {formatDate(feed.lastFetched)}
@@ -476,6 +506,75 @@ export default function App() {
                   ))}
                 </tbody>
               </table>
+            </div>
+          )}
+        </div>
+
+        {/* ZEN BROWSER INTEGRATION PANEL */}
+        <div className="mt-6 bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-800 rounded-xl overflow-hidden shadow-sm">
+          <button
+            type="button"
+            onClick={() => setZenPanelOpen(!zenPanelOpen)}
+            className="w-full px-6 py-4 flex items-center justify-between text-left hover:bg-gray-50 dark:hover:bg-gray-800/50 transition"
+          >
+            <div className="flex items-center space-x-3">
+              <div className="bg-orange-500/10 text-orange-500 p-2 rounded-lg">
+                <Zap className="w-5 h-5" />
+              </div>
+              <div>
+                <h2 className="font-semibold text-lg">Zen Browser Integration</h2>
+                <p className="text-xs text-gray-500 dark:text-gray-400">
+                  {feeds.length} feed{feeds.length === 1 ? '' : 's'} → {feeds.length} live folder{feeds.length === 1 ? '' : 's'} in Zen · {zenOnlyCount} auto-refresh off (Zen-only)
+                </p>
+              </div>
+            </div>
+            <ChevronDown className={`w-5 h-5 text-gray-400 transition-transform ${zenPanelOpen ? 'rotate-180' : ''}`} />
+          </button>
+
+          {zenPanelOpen && (
+            <div className="px-6 pb-6 border-t border-gray-200 dark:border-gray-800">
+              <div className="grid md:grid-cols-2 gap-4 py-4">
+                <div className="bg-gray-50 dark:bg-gray-900/60 border border-gray-200 dark:border-gray-800 rounded-lg p-3">
+                  <div className="text-[10px] font-bold uppercase tracking-wider text-gray-400 mb-1">Server URL (Zen connects here)</div>
+                  <div className="flex items-center space-x-1.5">
+                    <code className="text-xs font-mono bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded px-2 py-1 flex-1 truncate">
+                      {window.location.origin}
+                    </code>
+                    <button
+                      onClick={() => copyText(window.location.origin, () => setServerUrlCopied(true))}
+                      className="p-1.5 rounded bg-white hover:bg-gray-100 dark:bg-gray-800 dark:hover:bg-gray-700 border border-gray-200 dark:border-gray-700 text-gray-500 dark:text-gray-400 hover:text-orange-500 transition"
+                      title="Copy server URL"
+                    >
+                      {serverUrlCopied ? <Check className="w-3.5 h-3.5 text-green-600" /> : <Copy className="w-3.5 h-3.5" />}
+                    </button>
+                  </div>
+                  <p className="text-[11px] text-gray-500 dark:text-gray-400 mt-1.5">
+                    Each feed maps to <code className="bg-gray-100 dark:bg-gray-800 px-1 rounded">/feeds/&lt;feedId&gt;?ttl=0</code> — the <code className="bg-gray-100 dark:bg-gray-800 px-1 rounded">?ttl=0</code> makes every Zen refresh fetch fresh data (no x+y staleness).
+                  </p>
+                </div>
+
+                <div className="bg-gray-50 dark:bg-gray-900/60 border border-gray-200 dark:border-gray-800 rounded-lg p-3">
+                  <div className="text-[10px] font-bold uppercase tracking-wider text-gray-400 mb-1">Status</div>
+                  <ul className="text-xs space-y-1 text-gray-600 dark:text-gray-300">
+                    <li>• {feeds.length} feed{feeds.length === 1 ? '' : 's'} → {feeds.length} live folder{feeds.length === 1 ? '' : 's'} in Zen</li>
+                    <li>• {zenOnlyCount} with auto-refresh off (Zen-only — Zen polls drive refreshes)</li>
+                    <li>• Engine installed when live folders appear automatically in Zen</li>
+                  </ul>
+                </div>
+              </div>
+
+              <div>
+                <div className="text-[10px] font-bold uppercase tracking-wider text-gray-400 mb-2">Install (one-time)</div>
+                <ol className="text-xs space-y-2 text-gray-600 dark:text-gray-300 list-decimal list-inside">
+                  <li>Install a userChrome.js loader in Zen: <a href="https://github.com/MrOtherGuy/fx-autoconfig" target="_blank" rel="noreferrer" className="text-indigo-600 dark:text-indigo-400 hover:underline inline-flex items-center">fx-autoconfig <ExternalLink className="w-3 h-3 ml-0.5" /></a> or <a href="https://github.com/CosmoCreeper/Sine" target="_blank" rel="noreferrer" className="text-indigo-600 dark:text-indigo-400 hover:underline inline-flex items-center">Sine <ExternalLink className="w-3 h-3 ml-0.5" /></a>.</li>
+                  <li>Copy <code className="bg-gray-100 dark:bg-gray-800 px-1 rounded">zen/uc/rss-sync.uc.mjs</code> and <code className="bg-gray-100 dark:bg-gray-800 px-1 rounded">zen/uc/import.uc.mjs</code> into <code className="bg-gray-100 dark:bg-gray-800 px-1 rounded">&lt;profile&gt;/chrome/JS/</code>.</li>
+                  <li>Install the <strong>RSS Sync</strong> mod (<code className="bg-gray-100 dark:bg-gray-800 px-1 rounded">zen/mod/chrome.css</code> + <code className="bg-gray-100 dark:bg-gray-800 px-1 rounded">preferences.json</code>) via the <a href="https://zen-browser.app/mods/" target="_blank" rel="noreferrer" className="text-indigo-600 dark:text-indigo-400 hover:underline inline-flex items-center">Zen Mods marketplace <ExternalLink className="w-3 h-3 ml-0.5" /></a> or manual copy.</li>
+                  <li>Restart Zen — live folders appear within seconds of the server responding.</li>
+                </ol>
+                <p className="text-[11px] text-gray-500 dark:text-gray-400 mt-2">
+                  Full instructions &amp; settings: <code className="bg-gray-100 dark:bg-gray-800 px-1 rounded">zen/README.md</code> in the repo.
+                </p>
+              </div>
             </div>
           )}
         </div>
@@ -521,6 +620,7 @@ export default function App() {
                     onChange={(e) => setTtl(parseInt(e.target.value))}
                     className="w-full bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-indigo-500"
                   >
+                    <option value="0">Off — no auto-refresh (Zen-only)</option>
                     <option value="5">5 minutes</option>
                     <option value="15">15 minutes</option>
                     <option value="30">30 minutes</option>

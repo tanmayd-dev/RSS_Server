@@ -1,0 +1,215 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Zen Browser Integration — Research &amp; Design Sketch</title>
+<style>
+  :root {
+    --bg: #fafafa;
+    --fg: #1f2933;
+    --muted: #6b7280;
+    --accent: #2563eb;
+    --border: #e5e7eb;
+    --code-bg: #f3f4f6;
+    --block-bg: #fffbeb;
+    --block-border: #f59e0b;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--fg);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    line-height: 1.6;
+    font-size: 15px;
+  }
+  .container { max-width: 820px; margin: 0 auto; padding: 40px 28px 80px; }
+  h1 { font-size: 1.9em; margin: 0 0 4px; letter-spacing: -0.02em; }
+  h2 {
+    font-size: 1.35em;
+    margin-top: 2.2em;
+    padding-bottom: 6px;
+    border-bottom: 1px solid var(--border);
+    letter-spacing: -0.01em;
+  }
+  h3 { font-size: 1.08em; margin-top: 1.6em; }
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  code {
+    background: var(--code-bg);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 1px 5px;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 0.88em;
+  }
+  pre {
+    background: #0f172a;
+    color: #e2e8f0;
+    border-radius: 8px;
+    padding: 14px 16px;
+    overflow-x: auto;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 0.85em;
+    line-height: 1.5;
+  }
+  pre code { background: none; border: none; padding: 0; color: inherit; }
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    margin: 16px 0;
+    font-size: 0.92em;
+  }
+  th, td {
+    text-align: left;
+    padding: 9px 12px;
+    border: 1px solid var(--border);
+    vertical-align: top;
+  }
+  th { background: #f3f4f6; font-weight: 600; }
+  blockquote {
+    margin: 16px 0;
+    padding: 12px 16px;
+    background: var(--block-bg);
+    border-left: 4px solid var(--block-border);
+    border-radius: 0 6px 6px 0;
+    color: #78350f;
+  }
+  blockquote p { margin: 0; }
+  ul, ol { padding-left: 1.4em; }
+  li { margin: 4px 0; }
+  hr { border: none; border-top: 1px solid var(--border); margin: 32px 0; }
+  .muted { color: var(--muted); }
+</style>
+</head>
+<body>
+<div class="container">
+
+<h1>Zen Browser Integration — Research &amp; Design Sketch</h1>
+<p class="muted"><strong>Status:</strong> research + rough sketch only. No code changes made.<br>
+Research date: 2026-08-13, against Zen <code>stable</code> branch source
+(zen-browser/desktop, Live Folders feature since ~v1.19, March 2026).</p>
+<blockquote>
+  <p><strong>Updated 2026-08-13 (decisions made &amp; step 1 shipped):</strong></p>
+  <ul>
+    <li>One folder per feed (with source dedup) — mapping (a) is the chosen design.</li>
+    <li>Option A (<code>?ttl=0</code> folder URLs) plus a per-feed <strong>auto-refresh disabled</strong> mode (<code>ttl: 0</code>): if a feed is only consumed by Zen, Zen's polls are the only refreshes, no server-side auto-refresh.</li>
+    <li>Step 1 of "Suggested next steps" is <strong>done</strong>: <code>GET /feeds/:id</code> now honors <code>?ttl=</code> (stored <code>ttl: 0</code> disables auto-refresh; <code>?ttl=0</code> always forces), duplicate sources in one feed are fetched only once, and offline tests cover all three behaviors.</li>
+  </ul>
+</blockquote>
+
+<h2>1. How Zen mods work (verified in source)</h2>
+<p>A Zen mod is a folder in the profile at <code>chrome/zen-themes/&lt;modId&gt;/</code> containing:</p>
+<ul>
+  <li><code>chrome.css</code> — the mod's styling</li>
+  <li><code>preferences.json</code> — user-facing settings (checkbox / dropdown / string), surfaced as CSS variables and <code>@media (-moz-pref("..."))</code> queries</li>
+  <li>(from the marketplace) <code>zenMod.json</code> metadata</li>
+</ul>
+<p>The loader (<code>src/zen/mods/ZenMods.mjs</code>) concatenates every enabled mod's <code>chrome.css</code> into <code>chrome/zen-themes.css</code> and injects it into browser windows. <strong>That is all mods do — they are strictly CSS + static preferences. There is no JavaScript execution whatsoever in the mod system.</strong> A mod cannot create folders, call the network, or talk to our RSS server.</p>
+<p>To run JS with full browser-chrome privileges on Zen, the community-standard mechanism is an <strong>autoconfig loader</strong> — <code>fx-autoconfig</code> (MrOtherGuy) or the Sine mod manager — which evaluates <code>.uc.mjs</code> scripts placed in <code>&lt;profile&gt;/chrome/JS/</code>. This is confirmed working on Zen (e.g. github.com/BibekBhusal0/zen-custom-js). Such scripts run in the browser window context with access to <code>gBrowser</code>, <code>Services</code>, and all Zen internals.</p>
+
+<h2>2. The Zen APIs we would use</h2>
+<p>The big finding: <strong>Zen ships a native "Live Folders" feature</strong> that already does 90% of what we want — sidebar folders that auto-poll an RSS/Atom URL (or GitHub), keep only new items, and update automatically. We should build on it, not reinvent it.</p>
+<p>Relevant internals (from <code>stable</code> source):</p>
+<table>
+  <thead>
+    <tr><th>Module</th><th>Role</th></tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><code>resource:///modules/zen/ZenLiveFoldersManager.sys.mjs</code></td>
+      <td>Singleton manager. <code>createFolder(type)</code>, <code>deleteFolder(id)</code>, <code>getFolder(id)</code>, <code>liveFolders</code> Map (folderId → provider). State persisted to <code>zen-live-folders.jsonlz4</code> in the profile. Holds the provider registry.</td>
+    </tr>
+    <tr>
+      <td><code>resource:///modules/zen/RssLiveFolder.sys.mjs</code></td>
+      <td><code>nsRssLiveFolderProvider</code> (<code>type = "rss"</code>). State: <code>{ url, maxItems (default 10), timeRange (default 0 = all time), interval (default 30 min), lastFetched }</code>. <code>fetchItems()</code> fetches the URL, parses RSS 2.0/Atom, keeps only http/https items that have a date, dedupes by <code>guid</code> (falls back to url), then creates pinned lazy tabs via <code>gBrowser.addTrustedTab(url, {createLazyBrowser, inBackground, lazyTabTitle})</code> + <code>pinTab</code>.</td>
+    </tr>
+    <tr>
+      <td><code>resource:///modules/zen/ZenLiveFolder.sys.mjs</code></td>
+      <td>Base provider. <code>start()</code> = <code>DeferredTask</code> timer at <code>state.interval</code>; <code>refresh()</code> = immediate fetch (re-arms timer); <code>stop()</code>. <code>fetch()</code> uses a privileged channel (cookies + container context respected).</td>
+    </tr>
+    <tr>
+      <td><code>ZenLiveFoldersUI</code></td>
+      <td>Per-folder context menu: <strong>Refresh</strong> (<code>option-key="refresh"</code> → <code>refresh()</code>), fetch interval (15 min–8 h), feed URL, maxItems, timeRange.</td>
+    </tr>
+    <tr>
+      <td><code>gZenFolders</code> (<code>src/zen/folders/ZenFolders.mjs</code>)</td>
+      <td>Folder primitives: <code>createFolder(tabs, {label, isLiveFolder, collapsed, id, workspaceId})</code>, <code>setFolderUserIcon</code>, <code>folder.label</code>, <code>folder.delete()</code>, <code>folder.rename()</code>. Live folders are created exactly like this + registered in the manager.</td>
+    </tr>
+  </tbody>
+</table>
+<p>No WebExtension API exposes live folders (no relevant patches under <code>browser/components/extensions</code>), so a plain extension <strong>cannot</strong> create/manage them; chrome JS is required.</p>
+
+<h2>3. Design sketch</h2>
+
+<h3>3.1 Architecture — two pieces shipped as one package</h3>
+<ol>
+  <li><strong>A real Zen mod</strong> (<code>chrome/zen-themes/rss-sync/</code>): <code>chrome.css</code> + <code>preferences.json</code> for the <em>visual</em> part and user config (server URL, poll interval, maxItems, mapping mode, "sync" badge styling, optional refresh button styling). Distributable via the mod marketplace, but it cannot do logic.</li>
+  <li><strong>A <code>.uc.mjs</code> script</strong> (<code>fx-autoconfig</code> / Sine) — the <em>engine</em>:
+    <ul>
+      <li>Poll <code>GET http://localhost:3000/api/feeds</code> every ~15–30 s (trivial load on a local server) and diff against existing live folders.</li>
+      <li><strong>Create:</strong> mirror <code>ZenLiveFoldersManager.createFolder()</code> but skip the URL prompt — build <code>nsRssLiveFolderProvider</code> directly with <code>{ url: SERVER + /feeds/&lt;feedId&gt;, maxItems: 50, timeRange: 0, interval: &lt;pref&gt; }</code>, register in <code>manager.liveFolders</code>, then <code>start()</code> + <code>saveState()</code>.</li>
+      <li><strong>Delete:</strong> <code>manager.deleteFolder(folderId, true)</code> when a feed is removed.</li>
+      <li><strong>Rename:</strong> update <code>folder.label</code> when a feed name changes.</li>
+    </ul>
+  </li>
+</ol>
+<p>The script stays thin: it only reconciles the feed↔folder mapping and lets Zen's native poller do the fetching/rendering.</p>
+
+<h3>3.2 Feature mapping</h3>
+
+<p><strong>Feature 1 — "Adding a source should create a new live folder"</strong></p>
+<p>Two mappings, flagged as an open question:</p>
+<ul>
+  <li><strong>(a) One folder per feed</strong> (recommended default): the server already aggregates all of a feed's sources into one RSS XML at <code>/feeds/:feedId</code>. Zero server changes; creating a feed (with sources) in the frontend → one live folder appears in Zen.</li>
+  <li><strong>(b) One folder per source</strong>: requires a new per-source RSS endpoint on the server (e.g. <code>GET /feeds/:feedId/sources/:sourceId/rss</code>, emitting items filtered by <code>sourceId</code>). The script then diffs at source granularity. Pick this only if per-source folders are truly wanted — it needs a small server addition.</li>
+</ul>
+
+<p><strong>Feature 2 — best-effort sync with Zen refresh (avoid x+y delay)</strong></p>
+<p>Today: Zen polls live folders at <code>interval</code> (default 30 min) and the server refreshes its cache at the feed TTL (default 15 min). Worst case staleness ≈ interval + TTL.</p>
+<p>Fix so the server refreshes on Zen's schedule:</p>
+<ul>
+  <li><strong>Option A (zero JS):</strong> point the live folder at <code>http://localhost:3000/feeds/&lt;feedId&gt;?ttl=0</code>. Every Zen poll then forces a server re-scrape and serves fresh XML; the worst-case delay collapses to Zen's interval alone. <strong>Requires a one-line server fix:</strong> <code>GET /feeds/:id</code> currently <em>ignores</em> the <code>?ttl=</code> query param — the comment claims support ("TTL determined dynamically: 1. from query param") but the code uses only <code>feed.ttl ?? 15</code>.</li>
+  <li><strong>Option B (JS, refined best-effort):</strong> the uc.js wraps the provider so that before a Zen fetch it calls <code>POST /api/feeds/:id/refresh</code> <strong>only when the server's <code>lastFetched</code> is older than ~half the folder interval</strong>; otherwise Zen hits a warm cache. Saves re-scrapes while keeping worst case ≈ Zen interval.</li>
+</ul>
+<p>Recommendation: land the <code>?ttl</code> fix and start with Option A; upgrade to Option B later if scraping cost matters (e.g. YouTube Shorts checks on every poll).</p>
+
+<p><strong>Feature 3 — "Force update in Zen → force update RSS server, then in Zen"</strong></p>
+<p>The native folder context menu already has <strong>Refresh</strong>, which calls <code>liveFolder.refresh()</code> → <code>fetchItems()</code> → fetch the folder URL. With the <code>?ttl=0</code> URL, that single action already does: server force-refresh (<code>updateFeedIfNeeded(id, 0)</code> re-scrapes) <strong>then</strong> Zen updates its tabs. Requirement met with no extra UI.</p>
+<p>Optional polish: the uc.js adds a dedicated "Sync now" button on each folder (XUL element + CSS from the mod) that runs <code>POST /api/feeds/:id/refresh</code> first (so the scrape finishes and the cache is warm), then <code>liveFolder.refresh()</code>.</p>
+
+<h3>3.3 Server-side changes (small, deferred)</h3>
+<ol>
+  <li>Honor <code>?ttl=</code> in <code>GET /feeds/:id</code> (or add an explicit <code>?refresh=1</code>). One line; the endpoint and tests already assume it works.</li>
+  <li>(Only for mapping (b)) a per-source RSS endpoint.</li>
+  <li>Nothing else — <code>GET /api/feeds</code> (list) and <code>POST /api/feeds/:id/refresh</code> (force) already exist and are exactly what the script needs.</li>
+</ol>
+
+<h3>3.4 Packaging &amp; install flow</h3>
+<ul>
+  <li>Repo layout: <code>mod/</code> (the CSS mod, installable from the marketplace) + <code>uc/</code> (the <code>.uc.mjs</code> engine + <code>import.uc.mjs</code>), plus a README with the one-time fx-autoconfig setup and copy-in steps.</li>
+  <li>Optionally, the RSS frontend gains a "Zen integration" panel that shows the server URL, prints/installs instructions, and (if it can locate the profile) writes the script + enables the mod automatically.</li>
+</ul>
+
+<h3>3.5 Risks / caveats</h3>
+<ul>
+  <li><strong>Internal APIs are unstable:</strong> <code>ZenLiveFoldersManager</code> / <code>gZenFolders</code> are private, not a public SDK; Zen updates can break the script. Mitigate with feature detection and keeping the script minimal (it should degrade to "no auto-create" rather than crash the browser).</li>
+  <li><strong>Marketplace mods are CSS-only:</strong> the JS must ship via fx-autoconfig/Sine, so the deliverable is a mod + script bundle, not a single marketplace install.</li>
+  <li><strong>Re-scrape cost:</strong> <code>?ttl=0</code> re-scrapes every source on every Zen poll. Fine for small feeds; revisit with Option B for heavy ones.</li>
+  <li><strong>Multi-window:</strong> the manager targets the first synced window (<code>ZenWindowSync</code>); the script must handle window open/close or pin to a single window.</li>
+  <li><strong>maxItems:</strong> Zen defaults to 10 items per folder; set it to match the server's 50-item feed output (or expose as a preference).</li>
+  <li><strong>Dismissed items</strong> are stored per-folder in the manager state; deleting a feed's folder wipes them (expected).</li>
+</ul>
+
+<h2>4. Suggested next steps (when we start building)</h2>
+<ol>
+  <li>Fix <code>?ttl=</code> handling in <code>src/routes.ts</code> (<code>GET /feeds/:id</code>), add a test for it.</li>
+  <li>Prototype the uc.js reconciliation loop in a scratch profile (create/delete/rename live folders against <code>GET /api/feeds</code>), using a couple of existing feeds.</li>
+  <li>Wrap the folder URL as <code>/feeds/&lt;id&gt;?ttl=0</code>; verify "Refresh" forces server + Zen.</li>
+  <li>Build the CSS mod (styling + preferences) and package the bundle; add the frontend "Zen integration" panel last.</li>
+</ol>
+
+</div>
+</body>
+</html>

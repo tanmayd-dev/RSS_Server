@@ -36,11 +36,21 @@ router.post('/api/feeds', async (req: Request, res: Response) => {
     }
   }
 
+  // Parse TTL. 0 means auto-refresh disabled (the feed is only refreshed on demand, e.g. by Zen).
+  let ttlMinutes = 15;
+  if (ttl !== undefined && ttl !== null && ttl !== '') {
+    ttlMinutes = parseInt(ttl as string, 10);
+    if (Number.isNaN(ttlMinutes) || ttlMinutes < 0) {
+      res.status(400).json({ error: 'Invalid ttl: must be a non-negative number of minutes' });
+      return;
+    }
+  }
+
   try {
     const feed = await prisma.feed.create({
       data: {
         name,
-        ttl: ttl ? parseInt(ttl as string, 10) : 15,
+        ttl: ttlMinutes,
         sources: {
           create: sources.map((source) => ({
             url: source.url,
@@ -125,6 +135,16 @@ router.put('/api/feeds/:id', async (req: Request, res: Response) => {
     }
   }
 
+  // Parse TTL. 0 means auto-refresh disabled (the feed is only refreshed on demand, e.g. by Zen).
+  let ttlMinutes = 15;
+  if (ttl !== undefined && ttl !== null && ttl !== '') {
+    ttlMinutes = parseInt(ttl as string, 10);
+    if (Number.isNaN(ttlMinutes) || ttlMinutes < 0) {
+      res.status(400).json({ error: 'Invalid ttl: must be a non-negative number of minutes' });
+      return;
+    }
+  }
+
   try {
     // Get current sources to identify ones to delete
     const currentFeed = await prisma.feed.findUnique({
@@ -156,7 +176,7 @@ router.put('/api/feeds/:id', async (req: Request, res: Response) => {
         where: { id },
         data: {
           name,
-          ttl: ttl ? parseInt(ttl as string, 10) : 15,
+          ttl: ttlMinutes,
         },
       });
 
@@ -337,7 +357,7 @@ router.post('/api/feeds/:id/refresh', async (req: Request, res: Response) => {
       res.status(404).json({ error: 'Feed not found' });
       return;
     }
-    const updatedFeed = await feedManager.updateFeedIfNeeded(id, 0); // ttl = 0 forces scrape
+    const updatedFeed = await feedManager.updateFeedIfNeeded(id, 0, { force: true });
     res.json(updatedFeed);
   } catch (error: any) {
     res.status(500).json({ error: error.message });
@@ -361,11 +381,31 @@ router.get('/feeds/:id', async (req: Request, res: Response) => {
       return;
     }
 
-    // Enforce TTL (in minutes) configured inside the database
-    const ttl = feed.ttl ?? 15;
+    // TTL is determined dynamically:
+    // 1. From the link query parameter (?ttl=30) — ?ttl=0 forces a refresh.
+    // 2. From the stored feed TTL. A stored TTL of 0 means auto-refresh is disabled
+    //    (Zen-only feeds): the feed is only fetched if never fetched, or when an
+    //    explicit refresh is requested (?ttl=0 or POST /api/feeds/:id/refresh).
+    // 3. Default to 15 minutes.
+    let ttl = feed.ttl ?? 15;
+    let force = false;
+    let disabled = false;
+
+    const queryTtlRaw = req.query.ttl;
+    if (queryTtlRaw !== undefined) {
+      const parsedTtl = parseInt(queryTtlRaw as string, 10);
+      if (Number.isNaN(parsedTtl) || parsedTtl < 0) {
+        res.status(400).send('Invalid ttl parameter');
+        return;
+      }
+      ttl = parsedTtl;
+      force = parsedTtl === 0;
+    } else if (ttl === 0) {
+      disabled = true;
+    }
 
     // Refresh feed items cache if expired
-    const updatedFeed = await feedManager.updateFeedIfNeeded(id, ttl);
+    const updatedFeed = await feedManager.updateFeedIfNeeded(id, ttl, { force, disabled });
 
     // Generate XML feed
     const xml = feedGenerator.generateRssXml(updatedFeed);

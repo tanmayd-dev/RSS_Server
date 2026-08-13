@@ -1,4 +1,5 @@
 import express from 'express';
+import http from 'http';
 import axios from 'axios';
 import { router } from '../src/routes.js';
 import { prisma } from '../src/services/db.js';
@@ -228,6 +229,141 @@ async function runTests() {
   console.log(`Updated feed sources count: ${updateRes.data.sources.length}`);
   if (updateRes.data.sources.length !== 3) {
     throw new Error('Failed to update/add source via PUT');
+  }
+
+  // 10.6 Offline TTL / Source Dedup Tests (local RSS server, no external network)
+  console.log('\n=== TTL Query Param & Source Dedup Tests (local RSS server) ===');
+
+  let rssRequestCount = 0;
+  const rssServer = http.createServer((_req, res) => {
+    rssRequestCount++;
+    const xml = `<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0">
+  <channel>
+    <title>Local Test Feed</title>
+    <link>https://example.com</link>
+    <description>test</description>
+    <item>
+      <title>Item One</title>
+      <link>https://example.com/one</link>
+      <guid>https://example.com/one</guid>
+      <pubDate>${new Date().toUTCString()}</pubDate>
+    </item>
+    <item>
+      <title>Item Two</title>
+      <link>https://example.com/two</link>
+      <guid>https://example.com/two</guid>
+      <pubDate>${new Date().toUTCString()}</pubDate>
+    </item>
+  </channel>
+</rss>`;
+    res.writeHead(200, { 'Content-Type': 'application/xml' });
+    res.end(xml);
+  });
+
+  const RSS_SOURCE_PORT = 3002;
+  await new Promise<void>((resolve) => rssServer.listen(RSS_SOURCE_PORT, resolve));
+  const localFeedUrl = `http://localhost:${RSS_SOURCE_PORT}/feed.xml`;
+  const testFeedIds: string[] = [];
+
+  try {
+    // --- Stored ttl=0 disables auto-refresh; ?ttl=0 still forces a refresh ---
+    const disabledFeed = await axios.post(`${BASE_URL}/api/feeds`, {
+      name: 'TTL Disabled Feed',
+      ttl: 0,
+      sources: [{ url: localFeedUrl, type: 'rss', config: null }],
+    });
+    const disabledFeedId = disabledFeed.data.id;
+    testFeedIds.push(disabledFeedId);
+    if (disabledFeed.data.ttl !== 0) {
+      throw new Error('Feed should be saved with ttl = 0 (auto-refresh disabled)');
+    }
+    // Creating the feed triggers one initial scrape of the source
+    if (rssRequestCount !== 1) {
+      throw new Error(`Expected 1 initial fetch on feed create, got ${rssRequestCount}`);
+    }
+
+    const disabledFirst = await axios.get(`${BASE_URL}/feeds/${disabledFeedId}`);
+    if (!disabledFirst.data.includes('<item>')) {
+      throw new Error('Initial fetch should contain items');
+    }
+    // Plain GET with stored ttl=0 must NOT auto-refresh
+    await axios.get(`${BASE_URL}/feeds/${disabledFeedId}`);
+    if (rssRequestCount !== 1) {
+      throw new Error(`ttl=0 (disabled) feed must not auto-refresh on plain GET (fetches: ${rssRequestCount})`);
+    }
+    // Explicit ?ttl=0 must still force a refresh even when auto-refresh is disabled
+    await axios.get(`${BASE_URL}/feeds/${disabledFeedId}?ttl=0`);
+    if (rssRequestCount !== 2) {
+      throw new Error(`?ttl=0 should force a server refresh (fetches: ${rssRequestCount})`);
+    }
+    console.log('  [OK] stored ttl=0 disables auto-refresh; ?ttl=0 still forces');
+
+    // --- ?ttl=0 forces on every call; plain GET serves cache while TTL unexpired ---
+    const ttlFeed = await axios.post(`${BASE_URL}/api/feeds`, {
+      name: 'TTL Param Feed',
+      ttl: 30,
+      sources: [{ url: localFeedUrl, type: 'rss', config: null }],
+    });
+    const ttlFeedId = ttlFeed.data.id;
+    testFeedIds.push(ttlFeedId);
+    // Create-time initial scrape
+    if (rssRequestCount !== 3) {
+      throw new Error(`Unexpected fetch count after creating ttl feed: ${rssRequestCount}`);
+    }
+
+    await axios.get(`${BASE_URL}/feeds/${ttlFeedId}?ttl=0`);
+    if (rssRequestCount !== 4) {
+      throw new Error(`?ttl=0 must force a refresh (fetches: ${rssRequestCount})`);
+    }
+    await axios.get(`${BASE_URL}/feeds/${ttlFeedId}?ttl=0`);
+    if (rssRequestCount !== 5) {
+      throw new Error(`?ttl=0 must force a refresh every time (fetches: ${rssRequestCount})`);
+    }
+    await axios.get(`${BASE_URL}/feeds/${ttlFeedId}`);
+    if (rssRequestCount !== 5) {
+      throw new Error(`Plain GET should serve cache when stored TTL is unexpired (fetches: ${rssRequestCount})`);
+    }
+    console.log('  [OK] ?ttl=0 forces refresh; unexpired stored TTL serves cache');
+
+    // --- Duplicate sources in one feed are fetched only once per run ---
+    const dupFeed = await axios.post(`${BASE_URL}/api/feeds`, {
+      name: 'Dedup Feed',
+      ttl: 30,
+      sources: [
+        { url: localFeedUrl, type: 'rss', config: null },
+        { url: localFeedUrl, type: 'rss', config: null },
+      ],
+    });
+    const dupFeedId = dupFeed.data.id;
+    testFeedIds.push(dupFeedId);
+    if (dupFeed.data.sources.length !== 2) {
+      throw new Error('Dedup feed should keep both source rows');
+    }
+    // Create-time scrape: source 1 fetched, duplicate source 2 reuses its items
+    if (rssRequestCount !== 6) {
+      throw new Error(`Duplicate sources should be fetched once on create (fetches: ${rssRequestCount})`);
+    }
+
+    const dupXmlRes = await axios.get(`${BASE_URL}/feeds/${dupFeedId}?ttl=0`);
+    if (rssRequestCount !== 7) {
+      throw new Error(`Duplicate sources should be fetched once on force refresh (fetches: ${rssRequestCount})`);
+    }
+    const rssParser = new (await import('rss-parser')).default();
+    const parsedFeed = await rssParser.parseString(dupXmlRes.data);
+    const links = parsedFeed.items.map((i) => i.link);
+    if (links.length === 0) {
+      throw new Error('Dedup feed RSS should contain items');
+    }
+    if (new Set(links).size !== links.length) {
+      throw new Error(`RSS output must not contain duplicate links (got ${links.length} links, ${new Set(links).size} unique)`);
+    }
+    console.log(`  [OK] duplicate sources fetched once; RSS deduped (${links.length} unique items)`);
+  } finally {
+    for (const id of testFeedIds) {
+      await axios.delete(`${BASE_URL}/api/feeds/${id}`);
+    }
+    await new Promise<void>((resolve) => rssServer.close(() => resolve()));
   }
 
   // 11. Clean Up / Delete Feeds

@@ -1,0 +1,11 @@
+{
+  "id": "rss-sync",
+  "name": "RSS Sync",
+  "version": "0.1.0",
+  "description": "Visual layer for live folders mirrored from your local RSS Aggregator server. Requires the rss-sync uc.js engine (fx-autoconfig / Sine) for auto-create, sync and refresh.",
+  "author": "RSS Aggregator",
+  "homepage": "https://github.com/your-org/rss-server",
+  "readme": "https://github.com/your-org/rss-server/blob/main/zen/mod/README.md",
+  "style": "https://github.com/your-org/rss-server/raw/main/zen/mod/chrome.css",
+  "preferences": "https://github.com/your-org/rss-server/raw/main/zen/mod/preferences.json"
+}
