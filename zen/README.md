@@ -10,12 +10,38 @@ Mirror feeds from the local RSS Aggregator server into Zen Browser **Live Folder
   Zen's polls are the only refreshes needed.
 - Duplicate sources inside one feed are fetched only once (server-side dedup).
 
+## Quick install (Windows) — one command
+
+Download **`zen-install.exe`** from the RSS Aggregator frontend (Zen panel → "Download
+zen-install.exe") or from the [GitHub release](https://github.com/tanmayd-dev/RSS_Server/releases/latest):
+
+```bat
+zen-install.exe install      :: sets up loader + engine + mod in your default profile
+zen-install.exe status       :: what's installed, per profile
+zen-install.exe uninstall    :: removes engine + mod (loader kept)
+zen-install.exe --help       :: all options (--profile, --all, --dry-run, --force, ...)
+```
+
+The installer is **idempotent** and safe: atomic writes with backups, never overwrites
+files that differ from the shipped copies, refuses to touch a running profile without
+`--force`, and never writes `user.js` / `prefs.js`.
+
+**Prefs are left to the user.** The engine reads `mod.rsssync.*` prefs with built-in
+defaults (server `http://localhost:3000`). If your server URL differs, set
+`mod.rsssync.server_url` in `about:config` or Zen Settings → Mods → RSS Sync.
+
+If the installer can't find your Zen program dir, it still installs the engine + mod
+and tells you to add a loader manually (see `loader/README.md`).
+
+> Manual install (no executable) still works — see below.
+
 ## Layout
 
 | Path | What it is |
 |---|---|
 | `mod/` | The distributable Zen mod (visual layer + preferences). CSS-only — the mod system cannot run JS. |
 | `uc/`  | The engine: a userChrome.js script loaded via fx-autoconfig / Sine. Does all the logic. |
+| `loader/` | Vendored **fx-autoconfig** script loader (program + profile parts), pinned + attributed. |
 | `INSTALL_CHECKLIST.md` | Manual install + validation checklist for a real Zen profile. |
 
 ## Install

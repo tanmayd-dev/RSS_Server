@@ -1,5 +1,9 @@
 # RSS Sync — Manual Install & Validation Checklist
 
+> **Automated path:** `zen-install.exe install` (Windows) automates steps 1–3
+> (loader + engine + mod, default profile) and then validates with `zen-install.exe status`.
+> Use this checklist when installing by hand, or to validate what the installer did.
+
 Run through this in a real Zen profile (not the automated `test-uc`/`test-endpoints`
 suites) to validate the full integration end to end.
 

@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { 
   Sun, Moon, Trash2, Copy, Check, Plus, 
   RefreshCw, AlertCircle, Link, Rss, Youtube, 
-  MessageSquare, Globe, X, ExternalLink, Settings, Zap, ChevronDown
+  MessageSquare, Globe, X, ExternalLink, Settings, Zap, ChevronDown, Download
 } from 'lucide-react';
 import { Feed, FeedType, ScrapedFeedItem } from './types.js';
 
@@ -526,13 +526,37 @@ export default function App() {
               </div>
 
               <div>
-                <div className="text-[10px] font-bold uppercase tracking-wider text-gray-400 mb-2">Install (one-time)</div>
-                <ol className="text-xs space-y-2 text-gray-600 dark:text-gray-300 list-decimal list-inside">
-                  <li>Install a userChrome.js loader in Zen: <a href="https://github.com/MrOtherGuy/fx-autoconfig" target="_blank" rel="noreferrer" className="text-indigo-600 dark:text-indigo-400 hover:underline inline-flex items-center">fx-autoconfig <ExternalLink className="w-3 h-3 ml-0.5" /></a> or <a href="https://github.com/CosmoCreeper/Sine" target="_blank" rel="noreferrer" className="text-indigo-600 dark:text-indigo-400 hover:underline inline-flex items-center">Sine <ExternalLink className="w-3 h-3 ml-0.5" /></a>.</li>
-                  <li>Copy <code className="bg-gray-100 dark:bg-gray-800 px-1 rounded">zen/uc/rss-sync.uc.mjs</code> and <code className="bg-gray-100 dark:bg-gray-800 px-1 rounded">zen/uc/import.uc.mjs</code> into <code className="bg-gray-100 dark:bg-gray-800 px-1 rounded">&lt;profile&gt;/chrome/JS/</code>.</li>
-                  <li>Install the <strong>RSS Sync</strong> mod (<code className="bg-gray-100 dark:bg-gray-800 px-1 rounded">zen/mod/chrome.css</code> + <code className="bg-gray-100 dark:bg-gray-800 px-1 rounded">preferences.json</code>) via the <a href="https://zen-browser.app/mods/" target="_blank" rel="noreferrer" className="text-indigo-600 dark:text-indigo-400 hover:underline inline-flex items-center">Zen Mods marketplace <ExternalLink className="w-3 h-3 ml-0.5" /></a> or manual copy.</li>
-                  <li>Restart Zen — live folders appear within seconds of the server responding.</li>
-                </ol>
+                <div className="text-[10px] font-bold uppercase tracking-wider text-gray-400 mb-2">Windows installer (recommended)</div>
+                <div className="flex flex-col sm:flex-row sm:items-center gap-3">
+                  <a
+                    href="https://github.com/tanmayd-dev/RSS_Server/releases/latest/download/zen-install.exe"
+                    target="_blank"
+                    rel="noreferrer"
+                    className="inline-flex items-center justify-center gap-2 bg-orange-500 hover:bg-orange-600 text-white text-sm font-semibold px-4 py-2.5 rounded-lg transition shadow-sm"
+                  >
+                    <Download className="w-4 h-4" />
+                    Download zen-install.exe
+                  </a>
+                  <p className="text-[11px] text-gray-500 dark:text-gray-400">
+                    One command sets up the script loader, engine and mod in your default Zen profile.
+                    Double-click the exe (or run <code className="bg-gray-100 dark:bg-gray-800 px-1 rounded">zen-install.exe install</code>), then restart Zen.
+                  </p>
+                </div>
+                <ul className="text-xs space-y-1.5 text-gray-600 dark:text-gray-300 mt-3 list-disc list-inside">
+                  <li><code className="bg-gray-100 dark:bg-gray-800 px-1 rounded">zen-install.exe status</code> — what's installed per profile</li>
+                  <li><code className="bg-gray-100 dark:bg-gray-800 px-1 rounded">zen-install.exe uninstall</code> — removes engine + mod, keeps the loader</li>
+                  <li>Prefs are <strong>left to you</strong> — the installer never writes <code className="bg-gray-100 dark:bg-gray-800 px-1 rounded">user.js</code>. If your server isn't <code className="bg-gray-100 dark:bg-gray-800 px-1 rounded">localhost:3000</code>, set <code className="bg-gray-100 dark:bg-gray-800 px-1 rounded">mod.rsssync.server_url</code> in <code className="bg-gray-100 dark:bg-gray-800 px-1 rounded">about:config</code> or Zen Settings → Mods → RSS Sync.</li>
+                  <li>The release lives on a private GitHub repo — sign in to GitHub in your browser to download.</li>
+                </ul>
+                <details className="mt-3">
+                  <summary className="text-xs font-semibold text-indigo-600 dark:text-indigo-400 cursor-pointer hover:underline">Manual install (fallback)</summary>
+                  <ol className="text-xs space-y-2 text-gray-600 dark:text-gray-300 list-decimal list-inside mt-2">
+                    <li>Install a userChrome.js loader in Zen: <a href="https://github.com/MrOtherGuy/fx-autoconfig" target="_blank" rel="noreferrer" className="text-indigo-600 dark:text-indigo-400 hover:underline inline-flex items-center">fx-autoconfig <ExternalLink className="w-3 h-3 ml-0.5" /></a> or <a href="https://github.com/CosmoCreeper/Sine" target="_blank" rel="noreferrer" className="text-indigo-600 dark:text-indigo-400 hover:underline inline-flex items-center">Sine <ExternalLink className="w-3 h-3 ml-0.5" /></a>.</li>
+                    <li>Copy <code className="bg-gray-100 dark:bg-gray-800 px-1 rounded">zen/uc/rss-sync.uc.mjs</code> and <code className="bg-gray-100 dark:bg-gray-800 px-1 rounded">zen/uc/import.uc.mjs</code> into <code className="bg-gray-100 dark:bg-gray-800 px-1 rounded">&lt;profile&gt;/chrome/JS/</code>.</li>
+                    <li>Install the <strong>RSS Sync</strong> mod (<code className="bg-gray-100 dark:bg-gray-800 px-1 rounded">zen/mod/chrome.css</code> + <code className="bg-gray-100 dark:bg-gray-800 px-1 rounded">preferences.json</code>) via the <a href="https://zen-browser.app/mods/" target="_blank" rel="noreferrer" className="text-indigo-600 dark:text-indigo-400 hover:underline inline-flex items-center">Zen Mods marketplace <ExternalLink className="w-3 h-3 ml-0.5" /></a> or manual copy.</li>
+                    <li>Restart Zen — live folders appear within seconds of the server responding.</li>
+                  </ol>
+                </details>
                 <p className="text-[11px] text-gray-500 dark:text-gray-400 mt-2">
                   Full instructions &amp; settings: <code className="bg-gray-100 dark:bg-gray-800 px-1 rounded">zen/README.md</code> in the repo.
                 </p>

@@ -199,6 +199,64 @@ RSS Aggregator frontend.
 
 ---
 
+## Step 5 — Windows installer executable (GitHub Releases) ✅
+
+**Date:** 2026-08-13 · **Goal:** turn the manual install into a downloadable Windows
+installer, per the user's answers to the installer-plan decisions (executable hosted on
+GitHub Releases + downloadable from the UI; vendor + auto-install the loader; prefs left
+to the user; default-profile targeting; Windows only).
+
+### Changes
+
+- **`src/zen/installer.ts`** (new) — core installer module, zero runtime deps:
+  `discoverProfiles` (profiles.ini parsing, default profile, running detection),
+  `status` / `install` / `uninstall` with atomic writes + timestamped backups, a
+  byte-identical overwrite policy (never clobbers user-edited files), lock-file refusal
+  without `--force`, and **prefs left to the user** (never writes `user.js`/`prefs.js`).
+- **`src/zen/cli.ts`** (new) — the CLI (`status` / `install` / `uninstall`, flags
+  `--profile`, `--all`, `--profile-root`, `--zen-program-dir`, `--dry-run`, `--force`,
+  `--json`); runs via tsx in dev and is the exe's entry in production.
+- **`zen/loader/`** (new) — vendored **fx-autoconfig** (pinned commit `dfdab568`,
+  MPL-2.0 attribution in `zen/loader/README.md`): `program/` files go next to `zen.exe`
+  (found via `--zen-program-dir`, PATH, or common install folders), `profile/chrome/utils/`
+  goes into the profile. Auto-installed when no loader is detected; Sine and other
+  existing loaders are detected and left alone.
+- **`scripts/test_installer.ts`** (`npm run test-installer`) — 17 offline tests on a fake
+  profile tree: install placement, idempotency (no writes/backups on re-run),
+  zen-themes.json merge preserving other mods, running-profile refusal, user-edit
+  no-clobber, dry-run, invalid-JSON degradation, uninstall round-trip.
+- **`scripts/build_installer.mjs`** (`npm run build-installer`) — embeds the zen/ package
+  files, bundles the CLI with esbuild, and builds a Node **Single Executable
+  Application** (SEA + postject) → `dist-zen/zen-install.exe` (~99 MB, self-contained).
+- **`scripts/publish_release.mjs`** (`npm run publish-installer`) — publishes via `gh`:
+  tag `zen-installer-v<version>`, create-or-clobber asset, prints the `latest/download`
+  URL. **`zen-installer-v1.0.0` is live** on
+  <https://github.com/tanmayd-dev/RSS_Server/releases> (repo is private — downloads
+  require a GitHub login in the browser).
+- **`frontend/src/App.tsx`** — the Zen panel's "Install (one-time)" steps are replaced
+  with a **"Download zen-install.exe"** button (GitHub latest-release asset URL), the
+  exe command summary, the manual-prefs note, and the old steps collapsed under
+  "Manual install (fallback)".
+- **`package.json`** — scripts: `zen-status`, `zen-install`, `zen-uninstall`,
+  `test-installer`, `build-installer`, `publish-installer`; devDeps: `esbuild`,
+  `postject`. `INSTALLER_PLAN.md` status → implemented.
+
+### Verification
+
+- `npm run test-installer` — **17 passed, 0 failed**
+- `npx tsc --noEmit` (server) — pass · `cd frontend && npm run build` — pass
+- `npm run test-endpoints` / `npm run test-uc` — pass (regressions) — see final run below
+- exe smoke test: `--help`, `status` on this machine (Zen not installed → graceful
+  "Zen not found"), and a full install → status → uninstall round-trip against a fake
+  profile tree inside the exe (embedded files verified working).
+
+### Remaining (user-side)
+
+- Real-profile validation on a machine with Zen installed (`zen/INSTALL_CHECKLIST.md`).
+- Marketplace publishing of the mod stays manual.
+
+---
+
 ## 🎉 Plan complete
 
 All four steps are done. Features 1–3 (live folder per feed, best-effort sync with Zen's

@@ -6,3 +6,5 @@ node_modules
 /src/generated/prisma
 *.db
 *.db-journal
+/.tmp-build
+/dist-zen

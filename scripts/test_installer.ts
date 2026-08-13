@@ -1,0 +1,317 @@
+// Offline tests for the RSS Sync Zen installer (src/zen/installer.ts).
+// Builds a fake Zen app-data tree in a temp dir and asserts install/status/
+// uninstall behaviour: file placement, idempotency, backups, byte-identical
+// deletion, lock-file refusal, and "prefs left to the user". Run: npm run test-installer
+
+import assert from 'node:assert';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+import {
+  discoverProfiles,
+  findZenProgramDir,
+  install,
+  parseProfilesIni,
+  readPackageFilesFromDisk,
+  resolveTarget,
+  status,
+  uninstall,
+} from '../src/zen/installer.js';
+
+const REPO_ZEN_DIR = fileURLToPath(new URL('../zen/', import.meta.url));
+const files = readPackageFilesFromDisk(REPO_ZEN_DIR);
+
+let passed = 0;
+let failed = 0;
+const failures: string[] = [];
+
+function section(name: string): void {
+  console.log(`\n=== ${name} ===`);
+}
+
+function check(name: string, fn: () => void): void {
+  try {
+    fn();
+    passed++;
+    console.log(`  ✓ ${name}`);
+  } catch (err) {
+    failed++;
+    failures.push(name);
+    console.log(`  ✗ ${name}`);
+    console.log(`      ${(err as Error).message}`);
+  }
+}
+
+// --- fixtures ---------------------------------------------------------------
+
+function makeFakeZenTree(): { root: string; programDir: string; defaultProfile: string; otherProfile: string } {
+  const base = fs.mkdtempSync(path.join(os.tmpdir(), 'zen-installer-test-'));
+  const root = path.join(base, 'Zen Browser');
+  const programDir = path.join(base, 'zen-program');
+  const profilesDir = path.join(root, 'Profiles');
+  const defaultProfile = path.join(profilesDir, 'aaa.default');
+  const otherProfile = path.join(profilesDir, 'bbb.dev');
+  fs.mkdirSync(profilesDir, { recursive: true });
+  fs.mkdirSync(programDir, { recursive: true });
+  fs.mkdirSync(defaultProfile, { recursive: true });
+  fs.mkdirSync(otherProfile, { recursive: true });
+  fs.writeFileSync(path.join(programDir, 'zen.exe'), 'fake zen binary');
+  fs.writeFileSync(
+    path.join(root, 'profiles.ini'),
+    [
+      '[General]',
+      'StartWithLastProfile=1',
+      'Version=2',
+      '',
+      '[Profile0]',
+      'Name=default',
+      'IsRelative=1',
+      'Path=Profiles/aaa.default',
+      'Default=1',
+      '',
+      '[Profile1]',
+      'Name=dev',
+      'IsRelative=1',
+      'Path=Profiles/bbb.dev',
+      '',
+    ].join('\r\n')
+  );
+  return { root, programDir, defaultProfile, otherProfile };
+}
+
+const optsFor = (root: string, programDir: string, extra: Record<string, unknown> = {}) => ({
+  profileRoot: root,
+  zenProgramDir: programDir,
+  ...extra,
+});
+
+// --- tests ------------------------------------------------------------------
+
+section('profiles.ini parsing');
+check('parses sections, names, default flag and relative paths', () => {
+  const entries = parseProfilesIni(
+    '[Profile0]\nName=default\nIsRelative=1\nPath=Profiles/aaa.default\nDefault=1\n\n[Profile1]\nName=dev\nPath=Profiles/bbb.dev\n'
+  );
+  assert.strictEqual(entries.length, 2);
+  assert.strictEqual(entries[0].name, 'default');
+  assert.strictEqual(entries[0].isDefault, true);
+  assert.strictEqual(entries[0].pathValue, 'Profiles/aaa.default');
+  assert.strictEqual(entries[1].isDefault, false);
+});
+
+check('falls back to first profile as default when none flagged', () => {
+  const entries = parseProfilesIni('[Profile0]\nName=only\nPath=p\n');
+  assert.strictEqual(entries.length, 1);
+  assert.strictEqual(entries[0].isDefault, true);
+});
+
+section('discovery & targeting');
+check('discovers profiles with running detection', () => {
+  const { root, defaultProfile } = makeFakeZenTree();
+  const d = discoverProfiles(root);
+  assert.strictEqual(d.zenFound, true);
+  assert.strictEqual(d.profiles.length, 2);
+  assert.strictEqual(d.profiles[0].isDefault, true);
+  assert.strictEqual(d.profiles[0].running, false);
+  fs.writeFileSync(path.join(defaultProfile, 'parent.lock'), '');
+  assert.strictEqual(discoverProfiles(root).profiles[0].running, true);
+  fs.rmSync(root, { recursive: true, force: true });
+});
+
+check('resolveTarget: default, named, all, unknown', () => {
+  const { root, defaultProfile } = makeFakeZenTree();
+  const d = discoverProfiles(root);
+  const def = resolveTarget(d, {});
+  assert.strictEqual(def.profiles.length, 1);
+  assert.strictEqual(def.profiles[0].dir, defaultProfile);
+  assert.strictEqual(resolveTarget(d, { profile: 'dev' }).profiles[0].name, 'dev');
+  assert.strictEqual(resolveTarget(d, { all: true }).profiles.length, 2);
+  assert.ok(resolveTarget(d, { profile: 'nope' }).error);
+  fs.rmSync(root, { recursive: true, force: true });
+});
+
+check('findZenProgramDir: override and PATH', () => {
+  const { programDir } = makeFakeZenTree();
+  assert.strictEqual(findZenProgramDir(programDir), programDir);
+  assert.strictEqual(findZenProgramDir(path.join(programDir, '..')), null);
+  const saved = process.env.PATH;
+  process.env.PATH = `${programDir}${path.delimiter}${saved ?? ''}`;
+  assert.strictEqual(findZenProgramDir(), programDir);
+  if (saved === undefined) delete process.env.PATH;
+  else process.env.PATH = saved;
+});
+
+section('install');
+check('installs loader + engine + mod into default profile and program dir', () => {
+  const { root, programDir, defaultProfile } = makeFakeZenTree();
+  const r = install(optsFor(root, programDir));
+  assert.strictEqual(r.actions.filter((a) => a.level === 'error').length, 0, JSON.stringify(r.actions));
+
+  // loader program part
+  assert.ok(fs.existsSync(path.join(programDir, 'config.js')));
+  assert.ok(fs.existsSync(path.join(programDir, 'defaults', 'pref', 'config-prefs.js')));
+  // loader profile part
+  assert.ok(fs.existsSync(path.join(defaultProfile, 'chrome', 'utils', 'boot.sys.mjs')));
+  // engine
+  assert.ok(fs.existsSync(path.join(defaultProfile, 'chrome', 'JS', 'rss-sync.uc.mjs')));
+  assert.ok(fs.existsSync(path.join(defaultProfile, 'chrome', 'JS', 'import.uc.mjs')));
+  // mod + entry
+  assert.ok(fs.existsSync(path.join(defaultProfile, 'chrome', 'zen-themes', 'rss-sync', 'chrome.css')));
+  assert.ok(fs.existsSync(path.join(defaultProfile, 'chrome', 'zen-themes', 'rss-sync', 'preferences.json')));
+  const themes = JSON.parse(fs.readFileSync(path.join(defaultProfile, 'zen-themes.json'), 'utf8'));
+  assert.strictEqual(themes['rss-sync'].id, 'rss-sync');
+  assert.strictEqual(themes['rss-sync'].enabled, true);
+  // prefs left to the user: user.js must NOT exist
+  assert.ok(!fs.existsSync(path.join(defaultProfile, 'user.js')), 'user.js must not be created');
+  fs.rmSync(root, { recursive: true, force: true });
+});
+
+check('install is idempotent and creates no new backups on re-run', () => {
+  const { root, programDir, defaultProfile } = makeFakeZenTree();
+  fs.writeFileSync(path.join(defaultProfile, 'zen-themes.json'), JSON.stringify({ other: {} }, null, 2));
+  install(optsFor(root, programDir));
+  const backupsAfterFirst = fs
+    .readdirSync(defaultProfile)
+    .filter((f) => f.includes('rss-sync-backup'));
+  assert.strictEqual(backupsAfterFirst.length, 1, 'one backup from the first merge');
+
+  const r2 = install(optsFor(root, programDir));
+  const writes = r2.actions.filter((a) => /wrote|would write/.test(a.message));
+  assert.strictEqual(writes.length, 0, `re-run should write nothing: ${JSON.stringify(r2.actions)}`);
+  const backupsAfterSecond = fs
+    .readdirSync(defaultProfile)
+    .filter((f) => f.includes('rss-sync-backup'));
+  assert.strictEqual(backupsAfterSecond.length, 1, 'no new backups on idempotent re-run');
+  fs.rmSync(root, { recursive: true, force: true });
+});
+
+check('zen-themes.json merge preserves other mods', () => {
+  const { root, programDir, defaultProfile } = makeFakeZenTree();
+  fs.writeFileSync(
+    path.join(defaultProfile, 'zen-themes.json'),
+    JSON.stringify({ 'some-other-mod': { id: 'some-other-mod', enabled: true } }, null, 2)
+  );
+  install(optsFor(root, programDir));
+  const themes = JSON.parse(fs.readFileSync(path.join(defaultProfile, 'zen-themes.json'), 'utf8'));
+  assert.ok(themes['some-other-mod'], 'other mod preserved');
+  assert.ok(themes['rss-sync'], 'rss-sync added');
+  fs.rmSync(root, { recursive: true, force: true });
+});
+
+check('refuses to write into a running profile unless forced', () => {
+  const { root, programDir, defaultProfile } = makeFakeZenTree();
+  fs.writeFileSync(path.join(defaultProfile, '.parentlock'), '');
+  const r = install(optsFor(root, programDir));
+  assert.ok(r.actions.some((a) => a.level === 'error' && a.message.includes('running')));
+  assert.ok(!fs.existsSync(path.join(defaultProfile, 'chrome', 'JS')), 'nothing written');
+  const rf = install(optsFor(root, programDir, { force: true }));
+  assert.strictEqual(rf.actions.filter((a) => a.level === 'error').length, 0);
+  assert.ok(fs.existsSync(path.join(defaultProfile, 'chrome', 'JS', 'rss-sync.uc.mjs')));
+  fs.rmSync(root, { recursive: true, force: true });
+});
+
+check('does not clobber a user-edited engine file (unless forced)', () => {
+  const { root, programDir, defaultProfile } = makeFakeZenTree();
+  const jsDir = path.join(defaultProfile, 'chrome', 'JS');
+  fs.mkdirSync(jsDir, { recursive: true });
+  fs.writeFileSync(path.join(jsDir, 'rss-sync.uc.mjs'), '// user edited');
+  const r = install(optsFor(root, programDir));
+  assert.ok(r.actions.some((a) => a.level === 'warn' && a.message.includes('differs')));
+  assert.strictEqual(fs.readFileSync(path.join(jsDir, 'rss-sync.uc.mjs'), 'utf8'), '// user edited');
+  install(optsFor(root, programDir, { force: true }));
+  assert.notStrictEqual(fs.readFileSync(path.join(jsDir, 'rss-sync.uc.mjs'), 'utf8'), '// user edited');
+  fs.rmSync(root, { recursive: true, force: true });
+});
+
+check('dry-run writes nothing', () => {
+  const { root, programDir, defaultProfile } = makeFakeZenTree();
+  const r = install(optsFor(root, programDir, { dryRun: true }));
+  assert.ok(r.actions.some((a) => a.message.includes('DRY RUN')));
+  assert.ok(!fs.existsSync(path.join(programDir, 'config.js')));
+  assert.ok(!fs.existsSync(path.join(defaultProfile, 'chrome')));
+  assert.ok(!fs.existsSync(path.join(defaultProfile, 'zen-themes.json')));
+  fs.rmSync(root, { recursive: true, force: true });
+});
+
+check('invalid zen-themes.json produces a clear error', () => {
+  const { root, programDir, defaultProfile } = makeFakeZenTree();
+  fs.writeFileSync(path.join(defaultProfile, 'zen-themes.json'), '{ not json');
+  const r = install(optsFor(root, programDir));
+  assert.ok(r.actions.some((a) => a.level === 'error' && a.message.includes('not valid JSON')));
+  fs.rmSync(root, { recursive: true, force: true });
+});
+
+check('unknown profile name is rejected', () => {
+  const { root, programDir } = makeFakeZenTree();
+  const r = install(optsFor(root, programDir, { profile: 'missing' }));
+  assert.ok(r.actions.some((a) => a.level === 'error'));
+  fs.rmSync(root, { recursive: true, force: true });
+});
+
+section('status');
+check('status reflects an installed integration', () => {
+  const { root, programDir, defaultProfile } = makeFakeZenTree();
+  install(optsFor(root, programDir));
+  const s = status(optsFor(root, programDir));
+  assert.strictEqual(s.target?.name, 'default');
+  assert.strictEqual(s.loader.present, true);
+  assert.strictEqual(s.loader.kind, 'fx-autoconfig');
+  assert.strictEqual(s.engine.present, true);
+  assert.strictEqual(s.engine.matches, true);
+  assert.strictEqual(s.mod.installed, true);
+  assert.strictEqual(s.prefs.missing.length, 5, 'prefs reported as not set (left to user)');
+  // program dir is the fake one
+  assert.strictEqual(s.loader.programDir, programDir);
+  fs.rmSync(root, { recursive: true, force: true });
+});
+
+check('status reports no Zen when the app root is missing', () => {
+  const s = status({ profileRoot: path.join(os.tmpdir(), 'definitely-not-zen-' + Date.now()) });
+  assert.strictEqual(s.zenFound, false);
+  assert.strictEqual(s.target, null);
+});
+
+section('uninstall');
+check('uninstall removes engine + mod, keeps the loader, preserves other mods', () => {
+  const { root, programDir, defaultProfile } = makeFakeZenTree();
+  fs.writeFileSync(
+    path.join(defaultProfile, 'zen-themes.json'),
+    JSON.stringify({ 'some-other-mod': { id: 'some-other-mod', enabled: true } }, null, 2)
+  );
+  install(optsFor(root, programDir));
+  const r = uninstall(optsFor(root, programDir));
+  assert.strictEqual(r.actions.filter((a) => a.level === 'error').length, 0, JSON.stringify(r.actions));
+
+  assert.ok(!fs.existsSync(path.join(defaultProfile, 'chrome', 'JS', 'rss-sync.uc.mjs')));
+  assert.ok(!fs.existsSync(path.join(defaultProfile, 'chrome', 'JS', 'import.uc.mjs')));
+  assert.ok(!fs.existsSync(path.join(defaultProfile, 'chrome', 'zen-themes', 'rss-sync')));
+  const themes = JSON.parse(fs.readFileSync(path.join(defaultProfile, 'zen-themes.json'), 'utf8'));
+  assert.ok(themes['some-other-mod'], 'other mod preserved after uninstall');
+  assert.ok(!themes['rss-sync'], 'rss-sync entry removed');
+  // loader is kept
+  assert.ok(fs.existsSync(path.join(programDir, 'config.js')), 'program loader kept');
+  assert.ok(fs.existsSync(path.join(defaultProfile, 'chrome', 'utils', 'boot.sys.mjs')), 'profile loader kept');
+  fs.rmSync(root, { recursive: true, force: true });
+});
+
+check('uninstall leaves a user-edited engine file alone', () => {
+  const { root, programDir, defaultProfile } = makeFakeZenTree();
+  install(optsFor(root, programDir));
+  const enginePath = path.join(defaultProfile, 'chrome', 'JS', 'rss-sync.uc.mjs');
+  fs.writeFileSync(enginePath, '// user edited');
+  const r = uninstall(optsFor(root, programDir));
+  assert.ok(r.actions.some((a) => a.level === 'warn' && a.message.includes('differs')));
+  assert.strictEqual(fs.readFileSync(enginePath, 'utf8'), '// user edited');
+  fs.rmSync(root, { recursive: true, force: true });
+});
+
+// ----------------------------------------------------------------------------
+
+console.log(`\n${passed} passed, ${failed} failed`);
+if (failed > 0) {
+  console.log('Failures:');
+  for (const f of failures) console.log(`  - ${f}`);
+  process.exit(1);
+}
+process.exit(0);
