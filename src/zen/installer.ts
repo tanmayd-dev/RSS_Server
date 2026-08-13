@@ -8,7 +8,7 @@
 // `files` so the same code works from the repo (dev/tests) and from the
 // self-contained executable (embedded content).
 //
-// Design notes (see INSTALLER_PLAN.md):
+// Design notes:
 // - Default profile targeting via profiles.ini (never guessed from folder names).
 // - Loader: fx-autoconfig is vendored and auto-installed (program dir + profile
 //   part) unless a loader is already present; Sine and other loaders are kept.
