@@ -48,6 +48,7 @@ model FeedItem {
   pubDate       DateTime?
   guid          String?
   extraMetadata String?     // JSON string containing other metadata
+  read          Boolean     @default(false)  // read/unread state for the reader UI
   createdAt     DateTime    @default(now())
 
   @@unique([feedId, link])

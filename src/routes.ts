@@ -3,6 +3,7 @@ import { prisma } from './services/db.js';
 import * as feedManager from './services/feedManager.js';
 import * as feedGenerator from './services/feedGenerator.js';
 import * as scraper from './services/scraper.js';
+import { findZenProgramDir, status as zenInstallStatus } from './zen/installer.js';
 
 export const router = Router();
 
@@ -83,9 +84,14 @@ router.get('/api/feeds', async (req: Request, res: Response) => {
   try {
     const feeds = await prisma.feed.findMany({
       orderBy: { createdAt: 'desc' },
-      include: { sources: true },
+      include: {
+        sources: true,
+        _count: { select: { items: { where: { read: false } } } },
+      },
     });
-    res.json(feeds);
+    res.json(
+      feeds.map(({ _count, ...feed }) => ({ ...feed, unreadCount: _count.items }))
+    );
   } catch (error: any) {
     res.status(500).json({ error: error.message });
   }
@@ -99,13 +105,18 @@ router.get('/api/feeds/:id', async (req: Request, res: Response) => {
   try {
     const feed = await prisma.feed.findUnique({
       where: { id },
-      include: { sources: true, items: { include: { source: true } } },
+      include: {
+        sources: true,
+        items: { include: { source: true } },
+        _count: { select: { items: { where: { read: false } } } },
+      },
     });
     if (!feed) {
       res.status(404).json({ error: 'Feed not found' });
       return;
     }
-    res.json(feed);
+    const { _count, ...feedBody } = feed;
+    res.json({ ...feedBody, unreadCount: _count.items });
   } catch (error: any) {
     res.status(500).json({ error: error.message });
   }
@@ -244,6 +255,118 @@ router.delete('/api/feeds/:id', async (req: Request, res: Response) => {
       res.status(404).json({ error: 'Feed not found' });
       return;
     }
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/**
+ * Read-only status of the Zen integration (same core as zen-install.exe status).
+ * Never writes — safe to expose on the loopback-only server.
+ */
+router.get('/api/zen/status', (_req: Request, res: Response) => {
+  try {
+    const report = zenInstallStatus();
+    const target = report.target;
+    res.json({
+      zenFound: report.zenFound,
+      appInstalled: !!findZenProgramDir(),
+      appRoot: report.appRoot,
+      profileCount: report.profiles.length,
+      installed: !!target && (report.loader.present || report.engine.present),
+      running: !!target?.running,
+      targetName: target?.name ?? null,
+      error: report.zenFound
+        ? null
+        : report.appRoot
+          ? `No Zen profiles found at ${report.appRoot}`
+          : 'Zen is not supported on this platform',
+    });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/**
+ * List aggregated items (the reader).
+ * Query params: feedId, unreadOnly=true, limit (default 50, max 200), offset, since (ISO date)
+ */
+router.get('/api/items', async (req: Request, res: Response) => {
+  try {
+    const feedId = req.query.feedId as string | undefined;
+    const unreadOnly = req.query.unreadOnly === 'true';
+    const limit = Math.min(parseInt(req.query.limit as string, 10) || 50, 200);
+    const offset = parseInt(req.query.offset as string, 10) || 0;
+    const since = req.query.since as string | undefined;
+
+    const where: any = {};
+    if (feedId) where.feedId = feedId;
+    if (unreadOnly) where.read = false;
+    if (since) {
+      const sinceDate = new Date(since);
+      if (!Number.isNaN(sinceDate.getTime())) {
+        where.createdAt = { gte: sinceDate };
+      }
+    }
+
+    const [items, total, unreadTotal] = await Promise.all([
+      prisma.feedItem.findMany({
+        where,
+        orderBy: [{ pubDate: 'desc' }, { createdAt: 'desc' }],
+        skip: offset,
+        take: limit,
+        include: {
+          feed: { select: { id: true, name: true } },
+          source: { select: { id: true, type: true } },
+        },
+      }),
+      prisma.feedItem.count({ where }),
+      prisma.feedItem.count({ where: { ...where, read: false } }),
+    ]);
+
+    res.json({ items, total, unreadTotal, limit, offset });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/**
+ * Mark a single item read/unread.
+ */
+router.patch('/api/items/:id', async (req: Request, res: Response) => {
+  const id = req.params.id as string;
+  const { read } = req.body;
+  if (typeof read !== 'boolean') {
+    res.status(400).json({ error: 'Missing required field: read (boolean)' });
+    return;
+  }
+  try {
+    const item = await prisma.feedItem.update({ where: { id }, data: { read } });
+    res.json(item);
+  } catch (error: any) {
+    if (error.code === 'P2025') {
+      res.status(404).json({ error: 'Item not found' });
+      return;
+    }
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/**
+ * Mark items read in bulk: { ids?: string[], feedId?: string }.
+ * ids → those items; feedId → every item in that feed; neither → every item.
+ */
+router.post('/api/items/read', async (req: Request, res: Response) => {
+  try {
+    const { ids, feedId } = req.body ?? {};
+    const where: any = { read: false };
+    if (Array.isArray(ids) && ids.length > 0) {
+      where.id = { in: ids };
+    } else if (feedId) {
+      where.feedId = feedId;
+    }
+    const result = await prisma.feedItem.updateMany({ where, data: { read: true } });
+    res.json({ count: result.count });
+  } catch (error: any) {
     res.status(500).json({ error: error.message });
   }
 });

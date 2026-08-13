@@ -1,5 +1,8 @@
 import express from 'express';
 import http from 'http';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import axios from 'axios';
 import { router } from '../src/routes.js';
 import { prisma } from '../src/services/db.js';
@@ -364,6 +367,133 @@ async function runTests() {
       await axios.delete(`${BASE_URL}/api/feeds/${id}`);
     }
     await new Promise<void>((resolve) => rssServer.close(() => resolve()));
+  }
+
+  // 10.7 Reader: items listing + read/unread state (offline)
+  console.log('\n=== Reader: Items & Read State Tests (local RSS server) ===');
+  const readerRssServer = http.createServer((_req, res) => {
+    const xml = `<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0">
+  <channel>
+    <title>Reader Test Feed</title>
+    <link>https://example.com</link>
+    <description>test</description>
+    <item><title>Reader One</title><link>https://example.com/r1</link><guid>https://example.com/r1</guid><pubDate>${new Date().toUTCString()}</pubDate></item>
+    <item><title>Reader Two</title><link>https://example.com/r2</link><guid>https://example.com/r2</guid><pubDate>${new Date().toUTCString()}</pubDate></item>
+    <item><title>Reader Three</title><link>https://example.com/r3</link><guid>https://example.com/r3</guid><pubDate>${new Date().toUTCString()}</pubDate></item>
+  </channel>
+</rss>`;
+    res.writeHead(200, { 'Content-Type': 'application/xml' });
+    res.end(xml);
+  });
+  const READER_PORT = 3003;
+  await new Promise<void>((resolve) => readerRssServer.listen(READER_PORT, resolve));
+  const readerFeedUrl = `http://localhost:${READER_PORT}/feed.xml`;
+  const readerFeedIds: string[] = [];
+  try {
+    const readerFeed = await axios.post(`${BASE_URL}/api/feeds`, {
+      name: 'Reader Feed',
+      ttl: 30,
+      sources: [{ url: readerFeedUrl, type: 'rss', config: null }],
+    });
+    const readerFeedId = readerFeed.data.id;
+    readerFeedIds.push(readerFeedId);
+
+    // All 3 items exist and are unread
+    const feedItems = await axios.get(`${BASE_URL}/api/items`, { params: { feedId: readerFeedId } });
+    if (feedItems.data.items.length !== 3 || feedItems.data.unreadTotal !== 3 || feedItems.data.total !== 3) {
+      throw new Error(`Expected 3 unread items, got total=${feedItems.data.total} unread=${feedItems.data.unreadTotal}`);
+    }
+    if (!feedItems.data.items[0].feed || feedItems.data.items[0].feed.name !== 'Reader Feed') {
+      throw new Error('Items should include feed info');
+    }
+    // unreadOnly filter
+    const unread = await axios.get(`${BASE_URL}/api/items`, { params: { feedId: readerFeedId, unreadOnly: 'true' } });
+    if (unread.data.items.length !== 3) throw new Error('unreadOnly=true should return all unread');
+    // /api/feeds carries unreadCount
+    const feedsRes = await axios.get(`${BASE_URL}/api/feeds`);
+    const rf = feedsRes.data.find((f: any) => f.id === readerFeedId);
+    if (!rf || rf.unreadCount !== 3) {
+      throw new Error(`Expected unreadCount 3 on feed, got ${rf?.unreadCount}`);
+    }
+
+    // PATCH single item → read
+    const first = feedItems.data.items[0];
+    const patched = await axios.patch(`${BASE_URL}/api/items/${first.id}`, { read: true });
+    if (patched.data.read !== true) throw new Error('PATCH should mark item read');
+    const unread2 = await axios.get(`${BASE_URL}/api/items`, { params: { feedId: readerFeedId, unreadOnly: 'true' } });
+    if (unread2.data.items.length !== 2) throw new Error('Expected 2 unread after marking one read');
+    const feeds2 = await axios.get(`${BASE_URL}/api/feeds`);
+    if (feeds2.data.find((f: any) => f.id === readerFeedId).unreadCount !== 2) {
+      throw new Error('Feed unreadCount should drop to 2');
+    }
+
+    // A forced refresh must NOT reset read state
+    await axios.get(`${BASE_URL}/feeds/${readerFeedId}?ttl=0`);
+    const afterRefresh = await axios.get(`${BASE_URL}/api/items`, { params: { feedId: readerFeedId } });
+    if (afterRefresh.data.items.find((i: any) => i.id === first.id).read !== true) {
+      throw new Error('Refresh must not reset read state');
+    }
+
+    // Bulk mark by ids
+    const unreadIds = (await axios.get(`${BASE_URL}/api/items`, { params: { feedId: readerFeedId, unreadOnly: 'true' } })).data.items.map((i: any) => i.id);
+    const bulk = await axios.post(`${BASE_URL}/api/items/read`, { ids: unreadIds });
+    if (bulk.data.count !== 2) throw new Error(`Bulk read should mark 2, got ${bulk.data.count}`);
+
+    // read-all for one feed
+    await axios.patch(`${BASE_URL}/api/items/${first.id}`, { read: false });
+    const readAllFeed = await axios.post(`${BASE_URL}/api/items/read`, { feedId: readerFeedId });
+    if (readAllFeed.data.count !== 1) throw new Error(`read-all(feed) should mark 1, got ${readAllFeed.data.count}`);
+    const unread4 = await axios.get(`${BASE_URL}/api/items`, { params: { feedId: readerFeedId, unreadOnly: 'true' } });
+    if (unread4.data.items.length !== 0) throw new Error('Feed should have zero unread after read-all');
+
+    // Global read-all (counts any unread left anywhere)
+    await axios.patch(`${BASE_URL}/api/items/${first.id}`, { read: false });
+    const readAllGlobal = await axios.post(`${BASE_URL}/api/items/read`, {});
+    if (readAllGlobal.data.count < 1) throw new Error('Global read-all should mark at least 1');
+    console.log('  [OK] items listing, unread counts, single/bulk/read-all marking, refresh preserves read state');
+  } finally {
+    for (const id of readerFeedIds) {
+      await axios.delete(`${BASE_URL}/api/feeds/${id}`);
+    }
+    await new Promise<void>((resolve) => readerRssServer.close(() => resolve()));
+  }
+
+  // 10.8 Zen integration status endpoint (read-only, fake profile root)
+  console.log('\n=== Zen Status Endpoint Tests (fake profile root) ===');
+  const zenFakeRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'zen-status-test-'));
+  const zenFakeProg = fs.mkdtempSync(path.join(os.tmpdir(), 'zen-status-prog-'));
+  try {
+    fs.mkdirSync(path.join(zenFakeRoot, 'Profiles', 'aaa.default'), { recursive: true });
+    fs.writeFileSync(
+      path.join(zenFakeRoot, 'profiles.ini'),
+      '[Profile0]\nName=default\nIsRelative=1\nPath=Profiles/aaa.default\nDefault=1\n'
+    );
+    fs.writeFileSync(path.join(zenFakeProg, 'zen.exe'), 'fake');
+    process.env.ZEN_PROFILE_ROOT = zenFakeRoot;
+    process.env.ZEN_PROGRAM_DIR = zenFakeProg;
+
+    const zenRes = await axios.get(`${BASE_URL}/api/zen/status`);
+    if (!zenRes.data.zenFound || zenRes.data.profileCount !== 1) {
+      throw new Error(`Expected 1 Zen profile, got ${JSON.stringify(zenRes.data)}`);
+    }
+    if (zenRes.data.installed !== false) {
+      throw new Error('A fresh profile should report not installed');
+    }
+    // Simulate an installed engine file
+    const jsDir = path.join(zenFakeRoot, 'Profiles', 'aaa.default', 'chrome', 'JS');
+    fs.mkdirSync(jsDir, { recursive: true });
+    fs.writeFileSync(path.join(jsDir, 'rss-sync.uc.mjs'), 'x');
+    const zenRes2 = await axios.get(`${BASE_URL}/api/zen/status`);
+    if (zenRes2.data.installed !== true) {
+      throw new Error('A profile with the engine file should report installed');
+    }
+    console.log('  [OK] /api/zen/status reports fresh vs installed state (read-only)');
+  } finally {
+    delete process.env.ZEN_PROFILE_ROOT;
+    delete process.env.ZEN_PROGRAM_DIR;
+    fs.rmSync(zenFakeRoot, { recursive: true, force: true });
+    fs.rmSync(zenFakeProg, { recursive: true, force: true });
   }
 
   // 11. Clean Up / Delete Feeds

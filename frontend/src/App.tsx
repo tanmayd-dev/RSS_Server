@@ -2,9 +2,10 @@ import React, { useState, useEffect } from 'react';
 import { 
   Sun, Moon, Trash2, Copy, Check, Plus, 
   RefreshCw, AlertCircle, Link, Rss, Youtube, 
-  MessageSquare, Globe, X, ExternalLink, Settings, Zap, ChevronDown, Download
+  MessageSquare, Globe, X, ExternalLink, Settings, Zap, ChevronDown, Download,
+  Inbox, MailOpen, CheckCheck
 } from 'lucide-react';
-import { Feed, FeedType, ScrapedFeedItem } from './types.js';
+import { Feed, FeedItem, FeedType, ScrapedFeedItem } from './types.js';
 
 export default function App() {
   // Theme state
@@ -60,6 +61,20 @@ export default function App() {
   const [refreshingFeedId, setRefreshingFeedId] = useState<string | null>(null);
   const [saving, setSaving] = useState<boolean>(false);
 
+  // Items reader state
+  const [itemsModalOpen, setItemsModalOpen] = useState<boolean>(false);
+  const [itemsFeedId, setItemsFeedId] = useState<string | null>(null);
+  const [items, setItems] = useState<FeedItem[]>([]);
+  const [itemsTotal, setItemsTotal] = useState<number>(0);
+  const [itemsUnreadTotal, setItemsUnreadTotal] = useState<number>(0);
+  const [itemsLoading, setItemsLoading] = useState<boolean>(false);
+  const [itemsOffset, setItemsOffset] = useState<number>(0);
+  const [itemsUnreadOnly, setItemsUnreadOnly] = useState<boolean>(false);
+  const ITEMS_PAGE_SIZE = 50;
+
+  // Zen integration install status (read-only /api/zen/status)
+  const [zenInstallState, setZenInstallState] = useState<'checking' | 'zen-not-found' | 'zen-no-profile' | 'installed' | 'running' | 'not-installed'>('checking');
+
 
 
   // Apply dark mode theme
@@ -108,7 +123,102 @@ export default function App() {
 
   useEffect(() => {
     fetchFeeds();
+    fetchZenStatus();
   }, []);
+
+  // Whether the Zen integration is installed on this PC (read-only check)
+  const fetchZenStatus = async () => {
+    try {
+      const res = await fetch('/api/zen/status');
+      if (!res.ok) {
+        setZenInstallState('checking');
+        return;
+      }
+      const data = await res.json();
+      if (!data.zenFound) setZenInstallState(data.appInstalled ? 'zen-no-profile' : 'zen-not-found');
+      else if (data.running) setZenInstallState('running');
+      else if (data.installed) setZenInstallState('installed');
+      else setZenInstallState('not-installed');
+    } catch {
+      setZenInstallState('checking');
+    }
+  };
+
+  // --- Items reader ---
+  const loadItems = async (feedId: string | null, unreadOnly: boolean, offset: number, append: boolean) => {
+    setItemsLoading(true);
+    try {
+      const params = new URLSearchParams();
+      if (feedId) params.set('feedId', feedId);
+      if (unreadOnly) params.set('unreadOnly', 'true');
+      params.set('limit', String(ITEMS_PAGE_SIZE));
+      params.set('offset', String(offset));
+      const res = await fetch(`/api/items?${params}`);
+      if (!res.ok) throw new Error('Failed to load items');
+      const data = await res.json();
+      setItems((prev) => (append ? [...prev, ...data.items] : data.items));
+      setItemsTotal(data.total);
+      setItemsUnreadTotal(data.unreadTotal);
+      setItemsOffset(offset + data.items.length);
+    } catch (err: any) {
+      alert(`Error loading items: ${err.message}`);
+    } finally {
+      setItemsLoading(false);
+    }
+  };
+
+  const openItems = async (feedId: string | null) => {
+    setItemsFeedId(feedId);
+    setItems([]);
+    setItemsOffset(0);
+    setItemsModalOpen(true);
+    await loadItems(feedId, itemsUnreadOnly, 0, false);
+  };
+
+  const refreshItems = (unreadOnly: boolean) => {
+    loadItems(itemsFeedId, unreadOnly, 0, false);
+  };
+
+  const toggleUnreadFilter = () => {
+    const next = !itemsUnreadOnly;
+    setItemsUnreadOnly(next);
+    refreshItems(next);
+  };
+
+  const markItemRead = async (item: FeedItem) => {
+    if (item.read) return;
+    const res = await fetch(`/api/items/${item.id}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ read: true }),
+    });
+    if (!res.ok) return;
+    if (itemsUnreadOnly) {
+      setItems((prev) => prev.filter((i) => i.id !== item.id));
+      setItemsTotal((t) => Math.max(0, t - 1));
+    } else {
+      setItems((prev) => prev.map((i) => (i.id === item.id ? { ...i, read: true } : i)));
+    }
+    setItemsUnreadTotal((u) => Math.max(0, u - 1));
+    fetchFeeds(); // refresh unread badges
+  };
+
+  const markAllRead = async () => {
+    const res = await fetch('/api/items/read', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(itemsFeedId ? { feedId: itemsFeedId } : {}),
+    });
+    if (!res.ok) return;
+    setItems((prev) => prev.map((i) => ({ ...i, read: true })));
+    setItemsUnreadTotal(0);
+    fetchFeeds();
+  };
+
+  const handleOpenItem = (item: FeedItem) => {
+    window.open(item.link, '_blank', 'noopener');
+    markItemRead(item);
+  };
 
   // Delete feed
   const handleDelete = async (id: string) => {
@@ -260,7 +370,7 @@ export default function App() {
     copyText(`${window.location.origin}/feeds/${feedId}`, () => setCopiedFeedId(feedId));
   };
 
-  // Copy the Zen live-folder URL (?ttl=0 forces a server refresh on every Zen poll)
+  // Copy the Zen live-folder link (?ttl=0 makes the server refresh on every Zen poll)
   const handleCopyZenLink = (feedId: string) => {
     copyText(`${window.location.origin}/feeds/${feedId}?ttl=0`, () => setCopiedZenFeedId(feedId));
   };
@@ -276,8 +386,8 @@ export default function App() {
     });
   };
 
-  // Number of feeds with auto-refresh disabled (Zen-only mode)
-  const zenOnlyCount = feeds.filter((feed) => feed.ttl === 0).length;
+  // Strip HTML tags for the item snippet
+  const stripHtml = (html: string) => html.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim();
 
   // Badge mapping
   const getBadgeClass = (type: FeedType) => {
@@ -351,13 +461,23 @@ export default function App() {
         <div className="bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-800 rounded-xl overflow-hidden shadow-sm">
           <div className="px-6 py-4 border-b border-gray-200 dark:border-gray-800 flex items-center justify-between">
             <h2 className="font-semibold text-lg">Active Feeds</h2>
-            <button 
-              onClick={fetchFeeds}
-              className="p-2 text-gray-500 hover:text-indigo-600 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-800 transition"
-              title="Refresh Feeds"
-            >
-              <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} />
-            </button>
+            <div className="flex items-center space-x-2">
+              <button 
+                onClick={() => openItems(null)}
+                className="inline-flex items-center space-x-1.5 text-indigo-600 hover:text-indigo-700 dark:text-indigo-400 text-xs font-semibold px-3 py-2 rounded-lg border border-indigo-200 dark:border-indigo-900/50 bg-indigo-50 hover:bg-indigo-100 dark:bg-indigo-950/30 dark:hover:bg-indigo-950/50 transition"
+                title="Browse every aggregated item"
+              >
+                <Inbox className="w-4 h-4" />
+                <span>All items</span>
+              </button>
+              <button 
+                onClick={fetchFeeds}
+                className="p-2 text-gray-500 hover:text-indigo-600 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-800 transition"
+                title="Refresh Feeds"
+              >
+                <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} />
+              </button>
+            </div>
           </div>
 
           {loading && feeds.length === 0 ? (
@@ -385,8 +505,9 @@ export default function App() {
                 <thead>
                   <tr className="bg-gray-50 dark:bg-gray-900/50 text-xs font-semibold text-gray-500 dark:text-gray-400 border-b border-gray-200 dark:border-gray-800 align-middle">
                     <th className="px-6 py-3 align-middle text-left">Feed Name / Platforms</th>
-                    <th className="px-6 py-3 align-middle text-center">Cache Refresh (TTL)</th>
-                    <th className="px-6 py-3 align-middle text-center">Copy URL</th>
+                    <th className="px-6 py-3 align-middle text-center">Unread</th>
+                    <th className="px-6 py-3 align-middle text-center">Updates</th>
+                    <th className="px-6 py-3 align-middle text-center">Copy link</th>
                     <th className="px-6 py-3 align-middle text-center">Last Checked</th>
                     <th className="px-6 py-3 text-right align-middle">Actions</th>
                   </tr>
@@ -405,13 +526,27 @@ export default function App() {
                           ))}
                         </div>
                       </td>
+                      <td className="px-6 py-4 align-middle text-center">
+                        {feed.unreadCount ? (
+                          <button
+                            onClick={() => openItems(feed.id)}
+                            className="inline-flex items-center px-2.5 py-1 rounded-full text-xs font-bold leading-none bg-indigo-100 text-indigo-700 dark:bg-indigo-950/50 dark:text-indigo-300 hover:bg-indigo-200 dark:hover:bg-indigo-900/50 transition"
+                            title={`${feed.unreadCount} unread — view items`}
+                          >
+                            <MailOpen className="w-3 h-3 mr-1" />
+                            {feed.unreadCount}
+                          </button>
+                        ) : (
+                          <span className="text-xs text-gray-300 dark:text-gray-600">—</span>
+                        )}
+                      </td>
                       <td className="px-6 py-4 align-middle text-center font-medium">
                         {feed.ttl === 0 ? (
                           <span 
                             className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-semibold leading-none bg-orange-100 text-orange-700 dark:bg-orange-900/30 dark:text-orange-300"
-                            title="Auto-refresh disabled — Zen's live folder refresh (?ttl=0) drives updates."
+                            title="Updates when Zen refreshes its folder in your sidebar."
                           >
-                            <Zap className="w-3 h-3 mr-1" /> Zen-only
+                            <Zap className="w-3 h-3 mr-1" /> Zen-synced
                           </span>
                         ) : feed.ttl < 60 ? (
                           <span className="text-gray-650 dark:text-gray-350">{feed.ttl} mins</span>
@@ -424,14 +559,14 @@ export default function App() {
                             <button 
                               onClick={() => handleCopyLink(feed.id)}
                               className="p-1 rounded bg-white hover:bg-gray-100 dark:bg-gray-800 dark:hover:bg-gray-700 border border-gray-200 dark:border-gray-700 text-gray-500 dark:text-gray-400 hover:text-indigo-600 transition"
-                              title="Copy RSS URL"
+                              title="Copy feed link"
                             >
                               {copiedFeedId === feed.id ? <Check className="w-3.5 h-3.5 text-green-600" /> : <Copy className="w-3.5 h-3.5" />}
                             </button>
                             <button 
                               onClick={() => handleCopyZenLink(feed.id)}
                               className="p-1 rounded bg-white hover:bg-gray-100 dark:bg-gray-800 dark:hover:bg-gray-700 border border-gray-200 dark:border-gray-700 text-gray-500 dark:text-gray-400 hover:text-orange-500 transition"
-                              title="Copy Zen Live Folder URL (?ttl=0 — refreshes server on every Zen poll)"
+                              title="Copy the live folder link for Zen — it refreshes whenever Zen checks"
                             >
                               {copiedZenFeedId === feed.id ? <Check className="w-3.5 h-3.5 text-green-600" /> : <Zap className="w-3.5 h-3.5" />}
                             </button>
@@ -441,6 +576,13 @@ export default function App() {
                         {formatDate(feed.lastFetched)}
                       </td>
                       <td className="px-6 py-4 text-right space-x-1 whitespace-nowrap align-middle">
+                        <button 
+                          onClick={() => openItems(feed.id)}
+                          className="p-2 text-gray-405 hover:text-indigo-650 hover:bg-indigo-50 dark:hover:bg-indigo-950/20 rounded-lg transition"
+                          title="View items"
+                        >
+                          <Inbox className="w-4 h-4" />
+                        </button>
                         <button 
                           onClick={() => handleRefreshFeed(feed.id)}
                           disabled={refreshingFeedId === feed.id}
@@ -486,7 +628,7 @@ export default function App() {
               <div>
                 <h2 className="font-semibold text-lg">Zen Browser Integration</h2>
                 <p className="text-xs text-gray-500 dark:text-gray-400">
-                  {feeds.length} feed{feeds.length === 1 ? '' : 's'} → {feeds.length} live folder{feeds.length === 1 ? '' : 's'} in Zen · {zenOnlyCount} auto-refresh off (Zen-only)
+                  {feeds.length} feed{feeds.length === 1 ? '' : 's'} → {feeds.length} live folder{feeds.length === 1 ? '' : 's'} in Zen
                 </p>
               </div>
             </div>
@@ -497,7 +639,7 @@ export default function App() {
             <div className="px-6 pb-6 border-t border-gray-200 dark:border-gray-800">
               <div className="grid md:grid-cols-2 gap-4 py-4">
                 <div className="bg-gray-50 dark:bg-gray-900/60 border border-gray-200 dark:border-gray-800 rounded-lg p-3">
-                  <div className="text-[10px] font-bold uppercase tracking-wider text-gray-400 mb-1">Server URL (Zen connects here)</div>
+                  <div className="text-[10px] font-bold uppercase tracking-wider text-gray-400 mb-1">Server address (Zen connects here)</div>
                   <div className="flex items-center space-x-1.5">
                     <code className="text-xs font-mono bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded px-2 py-1 flex-1 truncate">
                       {window.location.origin}
@@ -505,28 +647,49 @@ export default function App() {
                     <button
                       onClick={() => copyText(window.location.origin, () => setServerUrlCopied(true))}
                       className="p-1.5 rounded bg-white hover:bg-gray-100 dark:bg-gray-800 dark:hover:bg-gray-700 border border-gray-200 dark:border-gray-700 text-gray-500 dark:text-gray-400 hover:text-orange-500 transition"
-                      title="Copy server URL"
+                      title="Copy server address"
                     >
                       {serverUrlCopied ? <Check className="w-3.5 h-3.5 text-green-600" /> : <Copy className="w-3.5 h-3.5" />}
                     </button>
                   </div>
                   <p className="text-[11px] text-gray-500 dark:text-gray-400 mt-1.5">
-                    Each feed maps to <code className="bg-gray-100 dark:bg-gray-800 px-1 rounded">/feeds/&lt;feedId&gt;?ttl=0</code> — the <code className="bg-gray-100 dark:bg-gray-800 px-1 rounded">?ttl=0</code> makes every Zen refresh fetch fresh data (no x+y staleness).
+                    This is where Zen reads your feeds from. You usually don't need to touch it — copy it only if you're setting up Zen by hand.
                   </p>
                 </div>
 
                 <div className="bg-gray-50 dark:bg-gray-900/60 border border-gray-200 dark:border-gray-800 rounded-lg p-3">
-                  <div className="text-[10px] font-bold uppercase tracking-wider text-gray-400 mb-1">Status</div>
+                  <div className="text-[10px] font-bold uppercase tracking-wider text-gray-400 mb-1">How it works</div>
                   <ul className="text-xs space-y-1 text-gray-600 dark:text-gray-300">
-                    <li>• {feeds.length} feed{feeds.length === 1 ? '' : 's'} → {feeds.length} live folder{feeds.length === 1 ? '' : 's'} in Zen</li>
-                    <li>• {zenOnlyCount} with auto-refresh off (Zen-only — Zen polls drive refreshes)</li>
-                    <li>• Engine installed when live folders appear automatically in Zen</li>
+                    <li>• One live folder per feed appears in Zen's sidebar</li>
+                    <li>• New items show up automatically — folders refresh on their own</li>
+                    <li>• Remove a feed here and its folder disappears from Zen</li>
                   </ul>
                 </div>
               </div>
 
               <div>
-                <div className="text-[10px] font-bold uppercase tracking-wider text-gray-400 mb-2">Windows installer (recommended)</div>
+                <div className="text-[10px] font-bold uppercase tracking-wider text-gray-400 mb-2 flex items-center justify-between">
+                  <span>Install in Zen (Windows)</span>
+                  {zenInstallState !== 'checking' && (
+                    <span
+                      className={`inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-semibold leading-none ${
+                        zenInstallState === 'installed'
+                          ? 'bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-300'
+                          : zenInstallState === 'running'
+                            ? 'bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-300'
+                            : zenInstallState === 'zen-not-found'
+                              ? 'bg-gray-100 text-gray-500 dark:bg-gray-800 dark:text-gray-400'
+                              : 'bg-indigo-100 text-indigo-700 dark:bg-indigo-950/50 dark:text-indigo-300'
+                      }`}
+                    >
+                      {zenInstallState === 'installed' && '✓ Installed — restart Zen to finish'}
+                      {zenInstallState === 'running' && 'Zen is open — close it, then run the installer'}
+                      {zenInstallState === 'not-installed' && 'Not installed yet'}
+                      {zenInstallState === 'zen-not-found' && 'Zen not detected on this PC'}
+                      {zenInstallState === 'zen-no-profile' && 'Zen found — launch it once to create your profile'}
+                    </span>
+                  )}
+                </div>
                 <div className="flex flex-col sm:flex-row sm:items-center gap-3">
                   <a
                     href="https://github.com/tanmayd-dev/RSS_Server/releases/latest/download/zen-install.exe"
@@ -538,18 +701,19 @@ export default function App() {
                     Download zen-install.exe
                   </a>
                   <p className="text-[11px] text-gray-500 dark:text-gray-400">
-                    One command sets up the script loader, engine and mod in your default Zen profile.
-                    Double-click the exe (or run <code className="bg-gray-100 dark:bg-gray-800 px-1 rounded">zen-install.exe install</code>), then restart Zen.
+                    Sets everything up for you — download, double-click, restart Zen. Your feeds appear as folders in the sidebar within a minute.
                   </p>
                 </div>
+                <p className="text-[11px] text-gray-500 dark:text-gray-400 mt-2">
+                  Windows may show a "Windows protected your PC" warning the first time — click <strong>More info → Run anyway</strong>. It's expected until the installer is signed.
+                </p>
                 <ul className="text-xs space-y-1.5 text-gray-600 dark:text-gray-300 mt-3 list-disc list-inside">
-                  <li><code className="bg-gray-100 dark:bg-gray-800 px-1 rounded">zen-install.exe status</code> — what's installed per profile</li>
-                  <li><code className="bg-gray-100 dark:bg-gray-800 px-1 rounded">zen-install.exe uninstall</code> — removes engine + mod, keeps the loader</li>
-                  <li>Prefs are <strong>left to you</strong> — the installer never writes <code className="bg-gray-100 dark:bg-gray-800 px-1 rounded">user.js</code>. If your server isn't <code className="bg-gray-100 dark:bg-gray-800 px-1 rounded">localhost:3000</code>, set <code className="bg-gray-100 dark:bg-gray-800 px-1 rounded">mod.rsssync.server_url</code> in <code className="bg-gray-100 dark:bg-gray-800 px-1 rounded">about:config</code> or Zen Settings → Mods → RSS Sync.</li>
-                  <li>The release lives on a private GitHub repo — sign in to GitHub in your browser to download.</li>
+                  <li>Nothing to configure — it installs into your main Zen profile automatically.</li>
+                  <li>If your server runs at a different address than <code className="bg-gray-100 dark:bg-gray-800 px-1 rounded">http://localhost:3000</code>, set it in Zen: <strong>Settings → Mods → RSS Sync</strong>.</li>
+                  <li>Changed your mind? Run <code className="bg-gray-100 dark:bg-gray-800 px-1 rounded">zen-install.exe uninstall</code> and restart Zen.</li>
                 </ul>
                 <details className="mt-3">
-                  <summary className="text-xs font-semibold text-indigo-600 dark:text-indigo-400 cursor-pointer hover:underline">Manual install (fallback)</summary>
+                  <summary className="text-xs font-semibold text-indigo-600 dark:text-indigo-400 cursor-pointer hover:underline">Manual setup (advanced)</summary>
                   <ol className="text-xs space-y-2 text-gray-600 dark:text-gray-300 list-decimal list-inside mt-2">
                     <li>Install a userChrome.js loader in Zen: <a href="https://github.com/MrOtherGuy/fx-autoconfig" target="_blank" rel="noreferrer" className="text-indigo-600 dark:text-indigo-400 hover:underline inline-flex items-center">fx-autoconfig <ExternalLink className="w-3 h-3 ml-0.5" /></a> or <a href="https://github.com/CosmoCreeper/Sine" target="_blank" rel="noreferrer" className="text-indigo-600 dark:text-indigo-400 hover:underline inline-flex items-center">Sine <ExternalLink className="w-3 h-3 ml-0.5" /></a>.</li>
                     <li>Copy <code className="bg-gray-100 dark:bg-gray-800 px-1 rounded">zen/uc/rss-sync.uc.mjs</code> and <code className="bg-gray-100 dark:bg-gray-800 px-1 rounded">zen/uc/import.uc.mjs</code> into <code className="bg-gray-100 dark:bg-gray-800 px-1 rounded">&lt;profile&gt;/chrome/JS/</code>.</li>
@@ -558,13 +722,147 @@ export default function App() {
                   </ol>
                 </details>
                 <p className="text-[11px] text-gray-500 dark:text-gray-400 mt-2">
-                  Full instructions &amp; settings: <code className="bg-gray-100 dark:bg-gray-800 px-1 rounded">zen/README.md</code> in the repo.
+                  Need help? Run <code className="bg-gray-100 dark:bg-gray-800 px-1 rounded">zen-install.exe --help</code> from a terminal for every option.
                 </p>
               </div>
             </div>
           )}
         </div>
       </main>
+
+      {/* ITEMS READER MODAL */}
+      {itemsModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm overflow-y-auto">
+          <div className="bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-800 w-full max-w-3xl rounded-2xl shadow-xl overflow-hidden my-8 flex flex-col max-h-[90vh]">
+            
+            {/* Modal Header */}
+            <div className="px-6 py-4 border-b border-gray-200 dark:border-gray-800 flex items-center justify-between bg-gray-50 dark:bg-gray-900/50">
+              <div className="flex items-center space-x-3">
+                <div className="bg-indigo-600 text-white p-2 rounded-lg">
+                  <Inbox className="w-5 h-5" />
+                </div>
+                <div>
+                  <h3 className="font-bold text-lg">
+                    {itemsFeedId ? (feeds.find((f) => f.id === itemsFeedId)?.name ?? 'Items') : 'All Items'}
+                  </h3>
+                  <p className="text-xs text-gray-500 dark:text-gray-400">
+                    {itemsTotal} item{itemsTotal === 1 ? '' : 's'} · {itemsUnreadTotal} unread
+                  </p>
+                </div>
+              </div>
+              <div className="flex items-center space-x-2">
+                <button
+                  onClick={toggleUnreadFilter}
+                  className={`inline-flex items-center space-x-1 text-xs font-semibold px-2.5 py-1.5 rounded-lg border transition ${itemsUnreadOnly
+                    ? 'bg-indigo-600 text-white border-indigo-600'
+                    : 'text-gray-600 dark:text-gray-300 border-gray-200 dark:border-gray-700 hover:bg-gray-100 dark:hover:bg-gray-800'}`}
+                  title="Show only unread items"
+                >
+                  <MailOpen className="w-3.5 h-3.5" />
+                  <span>Unread</span>
+                </button>
+                <button
+                  onClick={markAllRead}
+                  disabled={itemsUnreadTotal === 0}
+                  className="inline-flex items-center space-x-1 text-xs font-semibold px-2.5 py-1.5 rounded-lg text-indigo-600 dark:text-indigo-400 border border-indigo-200 dark:border-indigo-900/50 bg-indigo-50 hover:bg-indigo-100 dark:bg-indigo-950/30 transition disabled:opacity-40 disabled:pointer-events-none"
+                  title="Mark all read"
+                >
+                  <CheckCheck className="w-3.5 h-3.5" />
+                  <span>Mark all read</span>
+                </button>
+                <button
+                  onClick={() => setItemsModalOpen(false)}
+                  className="text-gray-400 hover:text-gray-600 dark:hover:text-gray-200 p-1.5 rounded-lg hover:bg-gray-200 dark:hover:bg-gray-800 transition"
+                >
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
+            </div>
+
+            {/* Items List */}
+            <div className="overflow-y-auto flex-1 divide-y divide-gray-100 dark:divide-gray-800">
+              {itemsLoading && items.length === 0 ? (
+                <div className="p-12 text-center text-gray-500">
+                  <RefreshCw className="w-8 h-8 animate-spin mx-auto mb-3 text-indigo-600" />
+                  <p>Loading items...</p>
+                </div>
+              ) : items.length === 0 ? (
+                <div className="p-12 text-center text-gray-500">
+                  <MailOpen className="w-10 h-10 mx-auto mb-3 text-gray-300 dark:text-gray-700" />
+                  <p>No items{itemsUnreadOnly ? ' unread' : ''}.</p>
+                </div>
+              ) : (
+                items.map((item) => (
+                  <div
+                    key={item.id}
+                    className={`px-6 py-3.5 flex items-start space-x-3 hover:bg-gray-50 dark:hover:bg-gray-800/40 transition ${item.read ? 'opacity-55' : ''}`}
+                  >
+                    <span
+                      className={`mt-2 w-2 h-2 rounded-full shrink-0 ${item.read ? 'bg-gray-300 dark:bg-gray-700' : 'bg-indigo-500'}`}
+                      title={item.read ? 'Read' : 'Unread'}
+                    />
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-baseline justify-between gap-3">
+                        <button
+                          onClick={() => handleOpenItem(item)}
+                          className={`text-left truncate hover:underline ${item.read
+                            ? 'text-gray-600 dark:text-gray-400 font-normal'
+                            : 'text-gray-900 dark:text-white font-semibold'}`}
+                        >
+                          {item.title || 'Untitled'}
+                        </button>
+                        <span className="text-xs text-gray-400 dark:text-gray-500 shrink-0">
+                          {formatDate(item.pubDate ?? item.createdAt)}
+                        </span>
+                      </div>
+                      <div className="text-xs text-gray-500 dark:text-gray-400 mt-0.5 flex items-center space-x-2">
+                        {!itemsFeedId && item.feed && (
+                          <span className="font-medium text-indigo-600 dark:text-indigo-400 shrink-0">{item.feed.name}</span>
+                        )}
+                        {item.description && <span className="truncate flex-1">{stripHtml(item.description)}</span>}
+                      </div>
+                    </div>
+                    <div className="flex items-center space-x-1 shrink-0">
+                      {!item.read && (
+                        <button
+                          onClick={() => markItemRead(item)}
+                          className="p-1.5 rounded text-gray-400 hover:text-indigo-600 hover:bg-indigo-50 dark:hover:bg-indigo-950/30 transition"
+                          title="Mark read"
+                        >
+                          <Check className="w-4 h-4" />
+                        </button>
+                      )}
+                      <a
+                        href={item.link}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        onClick={() => markItemRead(item)}
+                        className="p-1.5 rounded text-gray-400 hover:text-indigo-600 hover:bg-indigo-50 dark:hover:bg-indigo-950/30 transition"
+                        title="Open link"
+                      >
+                        <ExternalLink className="w-4 h-4" />
+                      </a>
+                    </div>
+                  </div>
+                ))
+              )}
+            </div>
+
+            {/* Load more */}
+            {items.length > 0 && items.length < itemsTotal && (
+              <div className="px-6 py-3 border-t border-gray-200 dark:border-gray-800 text-center">
+                <button
+                  onClick={() => loadItems(itemsFeedId, itemsUnreadOnly, itemsOffset, true)}
+                  disabled={itemsLoading}
+                  className="text-sm font-semibold text-indigo-600 hover:text-indigo-700 dark:text-indigo-400 disabled:opacity-50 transition"
+                >
+                  {itemsLoading ? 'Loading…' : `Load more (${items.length} of ${itemsTotal})`}
+                </button>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
 
       {/* REGISTER/EDIT FORM MODAL */}
       {isModalOpen && (
@@ -600,13 +898,13 @@ export default function App() {
                   />
                 </div>
                 <div>
-                  <label className="block text-xs font-semibold uppercase tracking-wider text-gray-500 mb-1.5">Cache TTL</label>
+                  <label className="block text-xs font-semibold uppercase tracking-wider text-gray-500 mb-1.5">How often to check for updates</label>
                   <select
                     value={ttl}
                     onChange={(e) => setTtl(parseInt(e.target.value))}
                     className="w-full bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-indigo-500"
                   >
-                    <option value="0">Off — no auto-refresh (Zen-only)</option>
+                    <option value="0">Off — only refreshes when Zen checks</option>
                     <option value="5">5 minutes</option>
                     <option value="15">15 minutes</option>
                     <option value="30">30 minutes</option>

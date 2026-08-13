@@ -830,7 +830,7 @@ export function status(opts: InstallOptions = {}): StatusReport {
     }
     if (!loader.present) {
       nextSteps.push(
-        'No script loader detected — install fx-autoconfig (see zen/loader/README.md) or Sine, or re-run the installer once the Zen program dir is found.'
+        'No script loader detected — install fx-autoconfig or Sine, or re-run the installer once the Zen program dir is found.'
       );
     }
   } else if (error) {
@@ -907,7 +907,7 @@ export function install(opts: InstallOptions = {}): InstallReport {
     } else {
       if (!programDir) {
         warn(
-          'Loader: could not find the Zen program dir (zen.exe) — skipping loader install. Engine and mod are still installed; add fx-autoconfig or Sine manually (see zen/loader/README.md).'
+          'Loader: could not find the Zen program dir (zen.exe) — skipping loader install. Engine and mod are still installed; add fx-autoconfig or Sine manually.'
         );
         nextSteps.push('Install a script loader manually (fx-autoconfig or Sine), then restart Zen.');
       } else if (!isWritableDir(programDir)) {

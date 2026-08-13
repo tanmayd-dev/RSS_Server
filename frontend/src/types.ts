@@ -21,6 +21,7 @@ export interface Feed {
   updatedAt: string;
   sources: FeedSource[];
   items?: FeedItem[];
+  unreadCount?: number;
 }
 
 export interface FeedItem {
@@ -32,7 +33,10 @@ export interface FeedItem {
   pubDate: string | null;
   guid: string | null;
   extraMetadata: string | null;
+  read: boolean;
   createdAt: string;
+  feed?: { id: string; name: string };
+  source?: { id: string; type: string };
 }
 
 export interface HtmlConfig {
