@@ -98,7 +98,7 @@ export interface InstallOptions {
   profile?: string;
   /** Install to every discovered profile. */
   all?: boolean;
-  /** App data root (dir containing profiles.ini). Defaults to %APPDATA%\Zen Browser. */
+  /** App data root (dir containing profiles.ini). Defaults to %APPDATA%\Zen, falling back to the legacy %APPDATA%\Zen Browser. */
   profileRoot?: string;
   /** Zen program dir override (dir containing zen.exe). */
   zenProgramDir?: string;
@@ -172,12 +172,32 @@ export function readPackageFilesFromDisk(zenDir = path.join(process.cwd(), 'zen'
 // Profile discovery
 // ---------------------------------------------------------------------------
 
+/**
+ * App-data roots to probe for profiles.ini, most current first.
+ * Zen moved its profile root from "%APPDATA%\Zen Browser" to "%APPDATA%\Zen"
+ * when it rebranded (v1.5+); installs that predate the move — or that were
+ * never migrated — may still live in the legacy folder, so both are probed.
+ */
+export function appRootCandidates(appDataBase: string): string[] {
+  return [path.join(appDataBase, 'Zen'), path.join(appDataBase, 'Zen Browser')];
+}
+
+/** First candidate that actually contains a profiles.ini; else the first candidate. */
+export function pickAppRoot(candidates: string[]): string | null {
+  for (const c of candidates) {
+    if (fs.existsSync(path.join(c, 'profiles.ini'))) {
+      return c;
+    }
+  }
+  return candidates.length > 0 ? candidates[0] : null;
+}
+
 export function defaultAppRoot(): string | null {
   if (process.env.ZEN_PROFILE_ROOT) {
     return process.env.ZEN_PROFILE_ROOT;
   }
   if (process.platform === 'win32') {
-    return path.join(os.homedir(), 'AppData', 'Roaming', 'Zen Browser');
+    return pickAppRoot(appRootCandidates(path.join(os.homedir(), 'AppData', 'Roaming')));
   }
   // Windows-only installer; other platforms are not supported.
   return null;
@@ -240,6 +260,33 @@ export function parseProfilesIni(text: string): Array<{
   return entries;
 }
 
+/**
+ * Default= path values from [Install*] sections of profiles.ini (the same data
+ * lives in installs.ini). Each records which profile that installed copy of the
+ * browser actually opens — the authoritative "which profile am I using" signal.
+ */
+export function parseInstallDefaults(text: string): string[] {
+  const defaults: string[] = [];
+  let inInstall = false;
+  for (const rawLine of text.split(/\r?\n/)) {
+    const line = rawLine.trim();
+    if (!line || line.startsWith(';') || line.startsWith('#')) continue;
+    const sectionMatch = line.match(/^\[(.+)\]$/);
+    if (sectionMatch) {
+      inInstall = /^Install/i.test(sectionMatch[1]);
+      continue;
+    }
+    if (!inInstall) continue;
+    const eq = line.indexOf('=');
+    if (eq === -1) continue;
+    if (line.slice(0, eq).trim().toLowerCase() === 'default') {
+      const value = line.slice(eq + 1).trim();
+      if (value) defaults.push(value);
+    }
+  }
+  return defaults;
+}
+
 export function isProfileRunning(profileDir: string): boolean {
   return (
     fs.existsSync(path.join(profileDir, 'parent.lock')) ||
@@ -254,7 +301,14 @@ export function discoverProfiles(appRoot?: string): DiscoverResult {
   }
   const iniPath = path.join(root, 'profiles.ini');
   if (!fs.existsSync(iniPath)) {
-    return { appRoot: root, zenFound: false, profiles: [], error: `No profiles.ini at ${iniPath} — is Zen installed?` };
+    // When auto-detecting, the default root already prefers the current Zen
+    // location; list any other candidate so the message helps old installs too.
+    let extra = '';
+    if (!appRoot && process.platform === 'win32') {
+      const others = appRootCandidates(path.join(os.homedir(), 'AppData', 'Roaming')).filter((c) => c !== root);
+      if (others.length > 0) extra = ` (also checked ${others.join(', ')})`;
+    }
+    return { appRoot: root, zenFound: false, profiles: [], error: `No profiles.ini at ${iniPath}${extra} — is Zen installed?` };
   }
   let text: string;
   try {
@@ -263,7 +317,7 @@ export function discoverProfiles(appRoot?: string): DiscoverResult {
     return { appRoot: root, zenFound: false, profiles: [], error: `Could not read ${iniPath}: ${(err as Error).message}` };
   }
   const entries = parseProfilesIni(text);
-  const profiles: ZenProfile[] = entries.map((e) => {
+  let profiles: ZenProfile[] = entries.map((e) => {
     const dir = e.isRelative ? path.resolve(root, e.pathValue) : path.resolve(e.pathValue);
     return {
       name: e.name,
@@ -272,6 +326,19 @@ export function discoverProfiles(appRoot?: string): DiscoverResult {
       running: isProfileRunning(dir),
     };
   });
+
+  // An [Install*] section's Default= names the profile that installation opens;
+  // it wins over the Default=1 flag (which can lag behind, e.g. after Zen's
+  // profile move) and over the first-profile fallback.
+  const installDefaultDirs = parseInstallDefaults(text).map((p) =>
+    path.isAbsolute(p) ? path.normalize(p) : path.resolve(root, p)
+  );
+  const win = process.platform === 'win32';
+  const sameDir = (a: string, b: string) => (win ? a.toLowerCase() === b.toLowerCase() : a === b);
+  const matched = profiles.filter((p) => installDefaultDirs.some((d) => sameDir(p.dir, d)));
+  if (matched.length === 1) {
+    profiles = profiles.map((p) => ({ ...p, isDefault: sameDir(p.dir, matched[0].dir) }));
+  }
   return { appRoot: root, zenFound: profiles.length > 0, profiles };
 }
 

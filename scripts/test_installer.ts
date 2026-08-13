@@ -9,12 +9,16 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
+  appRootCandidates,
+  defaultAppRoot,
   discoverProfiles,
   findNodeExe,
   findServiceRoot,
   findZenProgramDir,
   install,
+  parseInstallDefaults,
   parseProfilesIni,
+  pickAppRoot,
   queryService,
   readPackageFilesFromDisk,
   resolveTarget,
@@ -154,6 +158,73 @@ check('falls back to first profile as default when none flagged', () => {
   assert.strictEqual(entries[0].isDefault, true);
 });
 
+check('parseInstallDefaults extracts Default= from [Install*] sections only', () => {
+  const text = [
+    '[InstallF0DC299D809B9700]',
+    'Default=Profiles/a1fslygp.Default (release)',
+    'Locked=1',
+    '',
+    '[Profile0]',
+    'Name=Default (release)',
+    'IsRelative=1',
+    'Path=Profiles/a1fslygp.Default (release)',
+    'Default=1',
+    '',
+    '[General]',
+    'StartWithLastProfile=1',
+  ].join('\r\n');
+  assert.deepStrictEqual(parseInstallDefaults(text), ['Profiles/a1fslygp.Default (release)']);
+  assert.deepStrictEqual(parseInstallDefaults('[Profile0]\nDefault=1\n'), []);
+});
+
+section('app root detection');
+check('appRootCandidates prefers the current Zen folder over the legacy one', () => {
+  const base = path.join(os.tmpdir(), 'zen-appdata');
+  const candidates = appRootCandidates(base);
+  assert.deepStrictEqual(candidates, [
+    path.join(base, 'Zen'),
+    path.join(base, 'Zen Browser'),
+  ]);
+});
+
+check('pickAppRoot picks the candidate with profiles.ini, else the first', () => {
+  const base = fs.mkdtempSync(path.join(os.tmpdir(), 'zen-root-test-'));
+  const current = path.join(base, 'Zen');
+  const legacy = path.join(base, 'Zen Browser');
+  const candidates = appRootCandidates(base);
+
+  // neither folder has profiles.ini -> first candidate (current location)
+  assert.strictEqual(pickAppRoot(candidates), current);
+
+  // only the legacy folder has one -> legacy wins
+  fs.mkdirSync(legacy, { recursive: true });
+  fs.writeFileSync(path.join(legacy, 'profiles.ini'), '');
+  assert.strictEqual(pickAppRoot(candidates), legacy);
+
+  // once the current folder has one too, current wins
+  fs.mkdirSync(current, { recursive: true });
+  fs.writeFileSync(path.join(current, 'profiles.ini'), '');
+  assert.strictEqual(pickAppRoot(candidates), current);
+
+  assert.strictEqual(pickAppRoot([]), null);
+  fs.rmSync(base, { recursive: true, force: true });
+});
+
+check('defaultAppRoot resolves to the real install location on Windows', () => {
+  if (process.platform !== 'win32') {
+    assert.strictEqual(defaultAppRoot(), null);
+    return;
+  }
+  const appData = path.join(os.homedir(), 'AppData', 'Roaming');
+  const root = defaultAppRoot();
+  assert.ok(root, 'defaultAppRoot must resolve on Windows');
+  const hasCurrent = fs.existsSync(path.join(appData, 'Zen', 'profiles.ini'));
+  const hasLegacy = fs.existsSync(path.join(appData, 'Zen Browser', 'profiles.ini'));
+  if (hasCurrent) assert.strictEqual(root, path.join(appData, 'Zen'));
+  else if (hasLegacy) assert.strictEqual(root, path.join(appData, 'Zen Browser'));
+  else assert.strictEqual(root, path.join(appData, 'Zen'), 'falls back to the current location for error messages');
+});
+
 section('discovery & targeting');
 check('discovers profiles with running detection', () => {
   const { root, defaultProfile } = makeFakeZenTree();
@@ -165,6 +236,42 @@ check('discovers profiles with running detection', () => {
   fs.writeFileSync(path.join(defaultProfile, 'parent.lock'), '');
   assert.strictEqual(discoverProfiles(root).profiles[0].running, true);
   fs.rmSync(root, { recursive: true, force: true });
+});
+
+check('install-section default wins over the Default=1 flag', () => {
+  const base = fs.mkdtempSync(path.join(os.tmpdir(), 'zen-install-test-'));
+  const root = path.join(base, 'Zen');
+  const profilesDir = path.join(root, 'Profiles');
+  const used = path.join(profilesDir, 'aaa.used');
+  const flagged = path.join(profilesDir, 'bbb.flagged');
+  fs.mkdirSync(used, { recursive: true });
+  fs.mkdirSync(flagged, { recursive: true });
+  fs.writeFileSync(
+    path.join(root, 'profiles.ini'),
+    [
+      '[InstallF0DC299D809B9700]',
+      'Default=Profiles/aaa.used',
+      'Locked=1',
+      '',
+      '[Profile0]',
+      'Name=Flagged',
+      'IsRelative=1',
+      'Path=Profiles/bbb.flagged',
+      'Default=1',
+      '',
+      '[Profile1]',
+      'Name=Used',
+      'IsRelative=1',
+      'Path=Profiles/aaa.used',
+      '',
+    ].join('\r\n')
+  );
+  const d = discoverProfiles(root);
+  const usedProfile = d.profiles.find((p) => p.name === 'Used');
+  assert.ok(usedProfile?.isDefault, 'install-referenced profile must be the default');
+  assert.strictEqual(d.profiles.find((p) => p.name === 'Flagged')?.isDefault, false);
+  assert.strictEqual(resolveTarget(d, {}).profiles[0].name, 'Used');
+  fs.rmSync(base, { recursive: true, force: true });
 });
 
 check('resolveTarget: default, named, all, unknown', () => {

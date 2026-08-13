@@ -26,7 +26,7 @@ Usage:
 Options:
   --profile <name>       Target a named profile (from profiles.ini)
   --all                  Target every discovered profile
-  --profile-root <dir>   Zen app data root (default: %APPDATA%\\Zen Browser)
+  --profile-root <dir>   Zen app data root (default: %APPDATA%\\Zen, falls back to %APPDATA%\\Zen Browser)
   --zen-program-dir <dir>  Zen program dir containing zen.exe
   --server-root <dir>    RSS server folder (contains package.json + scripts/keep_alive.cjs)
   --dry-run              Show what would happen without writing anything
