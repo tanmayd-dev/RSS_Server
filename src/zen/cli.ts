@@ -2,7 +2,7 @@
 // In the executable the package files come from the embedded module; in dev
 // (tsx / npm scripts) the stub is empty and files are read from the repo.
 
-import { builtFromDir, embeddedPackageFiles } from './generated/embedded.js';
+import { embeddedPackageFiles } from './generated/embedded.js';
 import {
   discoverProfiles,
   install,
@@ -14,36 +14,24 @@ import {
 
 const HELP = `RSS Sync — Zen Browser installer (Windows)
 
-Just double-click zen-install.exe — it sets everything up for your main
-Zen profile. Everything below is for when you want more control:
-
 Usage:
-  zen-install            Install into your default profile (same as double-clicking)
-  zen-install status     Report what is installed per profile
-  zen-install install    Install (explicit)
-  zen-install uninstall  Remove the integration (the script loader is kept)
+  zen-install status [options]         Report what is installed per profile
+  zen-install install [options]        Install loader + engine + mod (default profile)
+  zen-install uninstall [options]      Remove the engine + mod (loader kept)
 
 Options:
-  --profile <name>       Target a named profile (from profiles.ini)
-  --all                  Target every discovered profile
-  --profile-root <dir>   Zen app data root (default: %APPDATA%\\Zen, falls back to %APPDATA%\\Zen Browser)
+  --profile <name>     Target a named profile (from profiles.ini)
+  --all                Target every discovered profile
+  --profile-root <dir> Zen app data root (default: %APPDATA%\\Zen Browser)
   --zen-program-dir <dir>  Zen program dir containing zen.exe
-  --server-root <dir>    RSS server folder (contains package.json + scripts/keep_alive.cjs)
-  --dry-run              Show what would happen without writing anything
-  --force                Proceed while Zen is running; overwrite files that differ
-  --no-service           Skip registering the RSS Sync server as a Windows service
-  --verbose              Show the detailed per-file log
-  --json                 Machine-readable output (status only)
-  -h, --help             Show this help
+  --dry-run            Show what would happen without writing anything
+  --force              Proceed while Zen is running; overwrite files that differ
+  --json               Machine-readable output (status only)
+  -h, --help           Show this help
 
-The installer also registers the RSS Sync server as a Windows service
-("RSS Sync Server", auto start) when one is not present, so your feeds
-keep syncing even when Zen is closed. That step needs an elevated prompt:
-run zen-install.exe as administrator (or run the printed sc.exe command).
-If the server folder is not detected, pass --server-root <dir>.
-
-If your server runs at a different address than http://localhost:3000,
-set it in Zen: Settings -> Mods -> RSS Sync.
+Prefs (mod.rsssync.*) are LEFT TO THE USER: the installer never writes
+user.js or prefs.js. Set them in about:config or Zen Settings -> Mods ->
+RSS Sync if your server is not http://localhost:3000.
 `;
 
 interface CliOptions {
@@ -52,16 +40,13 @@ interface CliOptions {
   all: boolean;
   profileRoot?: string;
   zenProgramDir?: string;
-  serverRoot?: string;
   dryRun: boolean;
   force: boolean;
-  noService: boolean;
-  verbose: boolean;
   json: boolean;
 }
 
 function parseArgs(argv: string[]): { opts: CliOptions; error?: string } {
-  const opts: CliOptions = { all: false, dryRun: false, force: false, noService: false, verbose: false, json: false };
+  const opts: CliOptions = { all: false, dryRun: false, force: false, json: false };
   const positional: string[] = [];
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
@@ -87,12 +72,6 @@ function parseArgs(argv: string[]): { opts: CliOptions; error?: string } {
         opts.zenProgramDir = v;
         break;
       }
-      case '--server-root': {
-        const v = argv[++i];
-        if (!v) return { opts, error: '--server-root requires a value' };
-        opts.serverRoot = v;
-        break;
-      }
       case '--all':
         opts.all = true;
         break;
@@ -101,12 +80,6 @@ function parseArgs(argv: string[]): { opts: CliOptions; error?: string } {
         break;
       case '--force':
         opts.force = true;
-        break;
-      case '--no-service':
-        opts.noService = true;
-        break;
-      case '--verbose':
-        opts.verbose = true;
         break;
       case '--json':
         opts.json = true;
@@ -125,8 +98,7 @@ function parseArgs(argv: string[]): { opts: CliOptions; error?: string } {
   if (cmd && !['status', 'install', 'uninstall'].includes(cmd)) {
     return { opts, error: `Unknown command: ${cmd}` };
   }
-  // No command = install: double-clicking the exe should just set things up.
-  opts.command = (cmd as CliOptions['command']) ?? 'install';
+  opts.command = (cmd as CliOptions['command']) ?? 'status';
   return { opts };
 }
 
@@ -260,39 +232,11 @@ function cmdStatus(opts: CliOptions, files: PackageFiles): void {
     for (const p of report.prefs.missing) console.log(`  ${p.padEnd(34)} ${dim('not set (defaults apply)')}`);
   }
 
-  console.log();
-  console.log(bold('Windows service (RSS Sync server)'));
-  if (process.platform !== 'win32') {
-    console.log(`  ${dim('n/a (not Windows)')}`);
-  } else if (report.service.present) {
-    console.log(
-      `  ${report.service.running ? green('registered and running') : yellow('registered (not running)')} (${report.service.name})`
-    );
-  } else {
-    console.log(
-      `  ${yellow('not registered')} (${report.service.name}) — re-run the installer as administrator`
-    );
-  }
-
   printNextSteps(report.nextSteps);
 }
 
-function printFriendly(report: { actions: Array<{ level: string; message: string }>; dryRun: boolean }, done: string, already: string): void {
-  const errors = report.actions.filter((a) => a.level === 'error');
-  const warns = report.actions.filter((a) => a.level === 'warn');
-  const infos = report.actions.filter((a) => a.level === 'info');
-  for (const a of errors) console.log(`${red('  ✗')} ${red(a.message)}`);
-  for (const a of warns) console.log(`${yellow('  !')} ${yellow(a.message)}`);
-  for (const a of infos) console.log(`  · ${a.message}`);
-  if (report.dryRun) {
-    console.log(yellow('  DRY RUN — nothing was written.'));
-  } else if (errors.length === 0) {
-    const changed = report.actions.some((a) => /wrote|would write|removed|added|registered/.test(a.message));
-    console.log(green(`  ✓ ${changed ? done : already}`));
-  }
-}
-
 function cmdInstall(opts: CliOptions, files: PackageFiles): void {
+  console.log(bold('RSS Sync — installing'));
   const report = install({
     profile: opts.profile,
     all: opts.all,
@@ -300,25 +244,16 @@ function cmdInstall(opts: CliOptions, files: PackageFiles): void {
     zenProgramDir: opts.zenProgramDir,
     dryRun: opts.dryRun,
     force: opts.force,
-    installService: !opts.noService,
-    // Baked at build time so the published exe knows where the server lives
-    // even when downloaded outside the repo; --server-root wins over it.
-    serverRoot: opts.serverRoot ?? builtFromDir ?? undefined,
     files,
   });
-  if (opts.verbose) {
-    console.log(bold('RSS Sync — installing'));
-    printActions(report.actions);
-  } else {
-    console.log(bold('Setting up Zen for your feeds…'));
-    printFriendly(report, 'Everything is set up. Restart Zen and your feeds will appear as folders.', 'Already set up — nothing needed changing.');
-  }
+  printActions(report.actions);
   printNextSteps(report.nextSteps);
   const hasError = report.actions.some((a) => a.level === 'error');
   process.exitCode = hasError ? 1 : 0;
 }
 
 function cmdUninstall(opts: CliOptions, files: PackageFiles): void {
+  console.log(bold('RSS Sync — uninstalling'));
   const report = uninstall({
     profile: opts.profile,
     all: opts.all,
@@ -328,13 +263,7 @@ function cmdUninstall(opts: CliOptions, files: PackageFiles): void {
     force: opts.force,
     files,
   });
-  if (opts.verbose) {
-    console.log(bold('RSS Sync — uninstalling'));
-    printActions(report.actions);
-  } else {
-    console.log(bold('Removing the Zen integration…'));
-    printFriendly(report, 'Removed. Restart Zen to finish.', 'Nothing to remove — the integration wasn\'t installed.');
-  }
+  printActions(report.actions);
   printNextSteps(report.nextSteps);
   const hasError = report.actions.some((a) => a.level === 'error');
   process.exitCode = hasError ? 1 : 0;

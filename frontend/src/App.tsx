@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { 
   Sun, Moon, Trash2, Copy, Check, Plus, 
   RefreshCw, AlertCircle, Link, Rss, Youtube, 
-  MessageSquare, Globe, X, ExternalLink, Settings, Zap, ChevronDown, Download,
+  MessageSquare, Globe, X, ExternalLink, Settings, Zap, ChevronDown,
   Inbox, MailOpen, CheckCheck
 } from 'lucide-react';
 import { Feed, FeedItem, FeedType, ScrapedFeedItem } from './types.js';
@@ -115,7 +115,12 @@ export default function App() {
       setFeeds(data);
       setError(null);
     } catch (err: any) {
-      setError(err.message || 'An error occurred');
+      const msg = err.message || 'An error occurred';
+      if (msg.includes('NetworkError') || msg.includes('Failed to fetch') || msg.includes('fetch')) {
+        setError('Cannot connect to RSS server at http://localhost:3000. Ensure the backend server is running.');
+      } else {
+        setError(msg);
+      }
     } finally {
       setLoading(false);
     }
@@ -448,12 +453,20 @@ export default function App() {
       <main className="max-w-6xl mx-auto px-6 py-8">
         
         {error && (
-          <div className="mb-6 bg-red-50 border-l-4 border-red-500 p-4 rounded dark:bg-red-950/20 dark:border-red-900 flex items-start space-x-3">
-            <AlertCircle className="w-5 h-5 text-red-500 mt-0.5" />
-            <div>
-              <h3 className="font-semibold text-red-800 dark:text-red-400">Connection Error</h3>
-              <p className="text-sm text-red-700 dark:text-red-500">{error}</p>
+          <div className="mb-6 bg-red-50 border-l-4 border-red-500 p-4 rounded dark:bg-red-950/20 dark:border-red-900 flex items-start justify-between">
+            <div className="flex items-start space-x-3">
+              <AlertCircle className="w-5 h-5 text-red-500 mt-0.5 shrink-0" />
+              <div>
+                <h3 className="font-semibold text-red-800 dark:text-red-400">Connection Error</h3>
+                <p className="text-sm text-red-700 dark:text-red-500">{error}</p>
+              </div>
             </div>
+            <button
+              onClick={fetchFeeds}
+              className="ml-4 px-3 py-1.5 bg-red-100 dark:bg-red-900/40 text-red-800 dark:text-red-300 rounded text-xs font-semibold hover:bg-red-200 dark:hover:bg-red-900/60 transition shrink-0"
+            >
+              Retry Connection
+            </button>
           </div>
         )}
 
@@ -690,28 +703,14 @@ export default function App() {
                     </span>
                   )}
                 </div>
-                <div className="flex flex-col sm:flex-row sm:items-center gap-3">
-                  <a
-                    href="https://github.com/tanmayd-dev/RSS_Server/releases/latest/download/zen-install.exe"
-                    target="_blank"
-                    rel="noreferrer"
-                    className="inline-flex items-center justify-center gap-2 bg-orange-500 hover:bg-orange-600 text-white text-sm font-semibold px-4 py-2.5 rounded-lg transition shadow-sm"
-                  >
-                    <Download className="w-4 h-4" />
-                    Download zen-install.exe
-                  </a>
-                  <p className="text-[11px] text-gray-500 dark:text-gray-400">
-                    Sets everything up for you — download, double-click, restart Zen. Your feeds appear as folders in the sidebar within a minute.
-                  </p>
+                <div className="rounded-lg border border-gray-200 dark:border-gray-800 bg-gray-50 dark:bg-gray-800/40 p-3">
+                  <p className="text-[10px] font-bold uppercase tracking-wider text-gray-400 mb-2">Keep the RSS server running</p>
+                  <ul className="text-xs space-y-1.5 text-gray-600 dark:text-gray-300 list-disc list-inside">
+                    <li>Run <code className="bg-gray-100 dark:bg-gray-800 px-1 rounded">node scripts/keep_alive.cjs</code> once (or <code className="bg-gray-100 dark:bg-gray-800 px-1 rounded">npm start</code>) — it starts the server and restarts it if it exits.</li>
+                    <li>Autostart at login: put a shortcut to <code className="bg-gray-100 dark:bg-gray-800 px-1 rounded">scripts/start_hidden.ps1</code> or <code className="bg-gray-100 dark:bg-gray-800 px-1 rounded">start.bat</code> in your Startup folder (<code className="bg-gray-100 dark:bg-gray-800 px-1 rounded">shell:startup</code>), or add a Task Scheduler task triggered <strong>At log on</strong>.</li>
+                    <li>Server URL is <code className="bg-gray-100 dark:bg-gray-800 px-1 rounded">http://localhost:3000</code> — if yours differs, set it in Zen: <strong>Settings → Mods → RSS Sync</strong>.</li>
+                  </ul>
                 </div>
-                <p className="text-[11px] text-gray-500 dark:text-gray-400 mt-2">
-                  Windows may show a "Windows protected your PC" warning the first time — click <strong>More info → Run anyway</strong>. It's expected until the installer is signed.
-                </p>
-                <ul className="text-xs space-y-1.5 text-gray-600 dark:text-gray-300 mt-3 list-disc list-inside">
-                  <li>Nothing to configure — it installs into your main Zen profile automatically.</li>
-                  <li>If your server runs at a different address than <code className="bg-gray-100 dark:bg-gray-800 px-1 rounded">http://localhost:3000</code>, set it in Zen: <strong>Settings → Mods → RSS Sync</strong>.</li>
-                  <li>Changed your mind? Run <code className="bg-gray-100 dark:bg-gray-800 px-1 rounded">zen-install.exe uninstall</code> and restart Zen.</li>
-                </ul>
                 <details className="mt-3">
                   <summary className="text-xs font-semibold text-indigo-600 dark:text-indigo-400 cursor-pointer hover:underline">Manual setup (advanced)</summary>
                   <ol className="text-xs space-y-2 text-gray-600 dark:text-gray-300 list-decimal list-inside mt-2">
@@ -722,7 +721,7 @@ export default function App() {
                   </ol>
                 </details>
                 <p className="text-[11px] text-gray-500 dark:text-gray-400 mt-2">
-                  Need help? Run <code className="bg-gray-100 dark:bg-gray-800 px-1 rounded">zen-install.exe --help</code> from a terminal for every option.
+                  Full instructions &amp; settings: <code className="bg-gray-100 dark:bg-gray-800 px-1 rounded">zen/README.md</code> in the repo.
                 </p>
               </div>
             </div>

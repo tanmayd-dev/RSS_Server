@@ -1,9 +1,8 @@
 // Core logic for the RSS Sync Zen installer.
 //
 // Windows-only (Zen's profile root is %APPDATA%\Zen Browser). Zero runtime
-// dependencies beyond node builtins: node:fs / node:os / node:path /
-// node:crypto / node:child_process (for sc.exe), so the whole module can be
-// bundled into a single-file Windows executable.
+// dependencies: node:fs / node:os / node:path / node:crypto only, so the whole
+// module can be bundled into a single-file Windows executable.
 //
 // Package files (the engine, the mod and the vendored loader) are passed in via
 // `files` so the same code works from the repo (dev/tests) and from the
@@ -15,15 +14,10 @@
 //   part) unless a loader is already present; Sine and other loaders are kept.
 // - Preferences are LEFT TO THE USER: the installer never writes user.js or
 //   prefs.js. It reports which mod.rsssync.* prefs are set and how to set them.
-// - Windows service: install() also registers the RSS Sync server as a Windows
-//   service ("RSS Sync Server", auto start) when one is not already present,
-//   so feeds keep syncing even when Zen is closed. Creating the service needs
-//   an elevated prompt; otherwise the installer prints the exact sc.exe command.
 // - Safety: atomic writes with backups, never clobber files we did not ship
 //   (byte-identical check), refuse to write into a running profile without
 //   --force, never write prefs.js.
 
-import { execFileSync } from 'node:child_process';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
@@ -77,7 +71,6 @@ export interface StatusReport {
   };
   mod: { modDir: boolean; themesEntry: boolean; installed: boolean };
   prefs: { set: string[]; missing: string[] };
-  service: { name: string; present: boolean; running: boolean; detail?: string };
   nextSteps: string[];
 }
 
@@ -98,7 +91,7 @@ export interface InstallOptions {
   profile?: string;
   /** Install to every discovered profile. */
   all?: boolean;
-  /** App data root (dir containing profiles.ini). Defaults to %APPDATA%\Zen, falling back to the legacy %APPDATA%\Zen Browser. */
+  /** App data root (dir containing profiles.ini). Defaults to %APPDATA%\Zen Browser. */
   profileRoot?: string;
   /** Zen program dir override (dir containing zen.exe). */
   zenProgramDir?: string;
@@ -107,14 +100,6 @@ export interface InstallOptions {
   force?: boolean;
   /** Package file contents. Defaults to the repo's zen/ directory (dev). */
   files?: PackageFiles;
-  /** Register the RSS Sync server as a Windows service when missing (default true on Windows). */
-  installService?: boolean;
-  /** RSS server folder (must contain package.json + scripts/keep_alive.cjs). */
-  serverRoot?: string;
-  /** sc.exe runner override (tests inject a fake so no admin rights are needed). */
-  serviceRunner?: ServiceRunner;
-  /** Override for the "is a Zen browser process running" check (tests inject a fake instead of probing tasklist). */
-  processCheck?: () => boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -174,32 +159,12 @@ export function readPackageFilesFromDisk(zenDir = path.join(process.cwd(), 'zen'
 // Profile discovery
 // ---------------------------------------------------------------------------
 
-/**
- * App-data roots to probe for profiles.ini, most current first.
- * Zen moved its profile root from "%APPDATA%\Zen Browser" to "%APPDATA%\Zen"
- * when it rebranded (v1.5+); installs that predate the move — or that were
- * never migrated — may still live in the legacy folder, so both are probed.
- */
-export function appRootCandidates(appDataBase: string): string[] {
-  return [path.join(appDataBase, 'Zen'), path.join(appDataBase, 'Zen Browser')];
-}
-
-/** First candidate that actually contains a profiles.ini; else the first candidate. */
-export function pickAppRoot(candidates: string[]): string | null {
-  for (const c of candidates) {
-    if (fs.existsSync(path.join(c, 'profiles.ini'))) {
-      return c;
-    }
-  }
-  return candidates.length > 0 ? candidates[0] : null;
-}
-
 export function defaultAppRoot(): string | null {
   if (process.env.ZEN_PROFILE_ROOT) {
     return process.env.ZEN_PROFILE_ROOT;
   }
   if (process.platform === 'win32') {
-    return pickAppRoot(appRootCandidates(path.join(os.homedir(), 'AppData', 'Roaming')));
+    return path.join(os.homedir(), 'AppData', 'Roaming', 'Zen Browser');
   }
   // Windows-only installer; other platforms are not supported.
   return null;
@@ -262,87 +227,21 @@ export function parseProfilesIni(text: string): Array<{
   return entries;
 }
 
-/**
- * Default= path values from [Install*] sections of profiles.ini (the same data
- * lives in installs.ini). Each records which profile that installed copy of the
- * browser actually opens — the authoritative "which profile am I using" signal.
- */
-export function parseInstallDefaults(text: string): string[] {
-  const defaults: string[] = [];
-  let inInstall = false;
-  for (const rawLine of text.split(/\r?\n/)) {
-    const line = rawLine.trim();
-    if (!line || line.startsWith(';') || line.startsWith('#')) continue;
-    const sectionMatch = line.match(/^\[(.+)\]$/);
-    if (sectionMatch) {
-      inInstall = /^Install/i.test(sectionMatch[1]);
-      continue;
-    }
-    if (!inInstall) continue;
-    const eq = line.indexOf('=');
-    if (eq === -1) continue;
-    if (line.slice(0, eq).trim().toLowerCase() === 'default') {
-      const value = line.slice(eq + 1).trim();
-      if (value) defaults.push(value);
-    }
-  }
-  return defaults;
-}
-
-/** True when a tasklist dump contains a Zen browser main process (not helpers). */
-export function hasZenProcessInTasklist(output: string): boolean {
-  return /^"(zen\.exe|zen-twilight\.exe)"/im.test(output);
-}
-
-/** Whether any Zen browser process is currently running on this machine. */
-export function anyZenProcessRunning(): boolean {
-  if (process.platform !== 'win32') return false;
-  try {
-    const out = execFileSync('tasklist', ['/FO', 'CSV', '/NH'], {
-      encoding: 'utf8',
-      windowsHide: true,
-    });
-    return hasZenProcessInTasklist(out);
-  } catch {
-    // Can't tell — assume it might be running so we never write into a live profile.
-    return true;
-  }
-}
-
-/**
- * A profile is "running" when its lock file is present AND a Zen browser
- * process actually exists. The lock file survives unclean exits (crash,
- * task-kill), so existence alone is a false positive — check the process list.
- */
-export function isProfileRunning(
-  profileDir: string,
-  opts: { processCheck?: () => boolean } = {}
-): boolean {
-  const hasLock =
+export function isProfileRunning(profileDir: string): boolean {
+  return (
     fs.existsSync(path.join(profileDir, 'parent.lock')) ||
-    fs.existsSync(path.join(profileDir, '.parentlock'));
-  if (!hasLock) return false;
-  return (opts.processCheck ?? anyZenProcessRunning)();
+    fs.existsSync(path.join(profileDir, '.parentlock'))
+  );
 }
 
-export function discoverProfiles(
-  appRoot?: string,
-  opts: { processCheck?: () => boolean } = {}
-): DiscoverResult {
+export function discoverProfiles(appRoot?: string): DiscoverResult {
   const root = appRoot ?? defaultAppRoot();
   if (!root) {
     return { appRoot: null, zenFound: false, profiles: [], error: 'Zen is only supported on Windows for this installer.' };
   }
   const iniPath = path.join(root, 'profiles.ini');
   if (!fs.existsSync(iniPath)) {
-    // When auto-detecting, the default root already prefers the current Zen
-    // location; list any other candidate so the message helps old installs too.
-    let extra = '';
-    if (!appRoot && process.platform === 'win32') {
-      const others = appRootCandidates(path.join(os.homedir(), 'AppData', 'Roaming')).filter((c) => c !== root);
-      if (others.length > 0) extra = ` (also checked ${others.join(', ')})`;
-    }
-    return { appRoot: root, zenFound: false, profiles: [], error: `No profiles.ini at ${iniPath}${extra} — is Zen installed?` };
+    return { appRoot: root, zenFound: false, profiles: [], error: `No profiles.ini at ${iniPath} — is Zen installed?` };
   }
   let text: string;
   try {
@@ -351,28 +250,15 @@ export function discoverProfiles(
     return { appRoot: root, zenFound: false, profiles: [], error: `Could not read ${iniPath}: ${(err as Error).message}` };
   }
   const entries = parseProfilesIni(text);
-  let profiles: ZenProfile[] = entries.map((e) => {
+  const profiles: ZenProfile[] = entries.map((e) => {
     const dir = e.isRelative ? path.resolve(root, e.pathValue) : path.resolve(e.pathValue);
     return {
       name: e.name,
       dir,
       isDefault: e.isDefault,
-      running: isProfileRunning(dir, opts),
+      running: isProfileRunning(dir),
     };
   });
-
-  // An [Install*] section's Default= names the profile that installation opens;
-  // it wins over the Default=1 flag (which can lag behind, e.g. after Zen's
-  // profile move) and over the first-profile fallback.
-  const installDefaultDirs = parseInstallDefaults(text).map((p) =>
-    path.isAbsolute(p) ? path.normalize(p) : path.resolve(root, p)
-  );
-  const win = process.platform === 'win32';
-  const sameDir = (a: string, b: string) => (win ? a.toLowerCase() === b.toLowerCase() : a === b);
-  const matched = profiles.filter((p) => installDefaultDirs.some((d) => sameDir(p.dir, d)));
-  if (matched.length === 1) {
-    profiles = profiles.map((p) => ({ ...p, isDefault: sameDir(p.dir, matched[0].dir) }));
-  }
   return { appRoot: root, zenFound: profiles.length > 0, profiles };
 }
 
@@ -662,248 +548,12 @@ export function prefsSetInUserJs(profileDir: string): string[] {
 }
 
 // ---------------------------------------------------------------------------
-// Windows service (RSS Sync server)
-// ---------------------------------------------------------------------------
-// The RSS Sync server (dist/index.js via scripts/keep_alive.cjs) is registered
-// as a real Windows service so feeds keep syncing even when Zen is closed and
-// no one is logged in. keep_alive.cjs spawns the server with the project root
-// as its working directory, which matters because the server resolves paths
-// (frontend/dist, prisma db) relative to cwd.
-//
-// Creating a service needs an elevated prompt; when sc.exe is denied, the
-// installer reports the exact command to run as administrator instead.
-
-/** Display name shown in the Windows Services console. */
-export const SERVICE_DISPLAY_NAME = 'RSS Sync Server';
-
-/** Canonical service name. Override with RSS_SERVICE_NAME (mainly for tests). */
-export function serviceName(): string {
-  return (process.env.RSS_SERVICE_NAME ?? '').trim() || 'RSSSyncServer';
-}
-
-export interface ServiceState {
-  present: boolean;
-  running: boolean;
-  /** Detail when the presence check itself failed (e.g. sc.exe missing). */
-  detail?: string;
-}
-
-export interface ScResult {
-  ok: boolean;
-  code: number;
-  stdout: string;
-  stderr: string;
-}
-
-/** Runs sc.exe; injectable so install/status are testable without admin rights. */
-export type ServiceRunner = (args: string[]) => ScResult;
-
-export function defaultServiceRunner(args: string[]): ScResult {
-  try {
-    const stdout = execFileSync('sc.exe', args, { encoding: 'utf8', windowsHide: true });
-    return { ok: true, code: 0, stdout, stderr: '' };
-  } catch (err: unknown) {
-    const e = err as { status?: number; stdout?: string; stderr?: string };
-    return {
-      ok: false,
-      code: e.status ?? -1,
-      stdout: e.stdout ?? '',
-      stderr: e.stderr ?? '',
-    };
-  }
-}
-
-/** Query a service by name (sc query). Exit code 1060 = not registered. */
-export function queryService(
-  name: string,
-  runner: ServiceRunner = defaultServiceRunner
-): ServiceState {
-  const r = runner(['query', name]);
-  if (r.ok) {
-    const m = r.stdout.match(/STATE\s*:\s*(\d+)\s+(\w+)/);
-    return {
-      present: true,
-      running: !!m && (m[1] === '4' || /running/i.test(m[2])),
-    };
-  }
-  if (r.code === 1060) return { present: false, running: false };
-  return {
-    present: false,
-    running: false,
-    detail: (r.stderr || r.stdout).trim() || `sc.exe exited with code ${r.code}`,
-  };
-}
-
-/** Absolute path to node.exe for the service, or null. */
-export function findNodeExe(): string | null {
-  if (process.env.RSS_NODE_PATH) {
-    const p = path.resolve(process.env.RSS_NODE_PATH);
-    if (fs.existsSync(p)) return p;
-  }
-  // Dev mode (tsx / npm scripts): the current process is node itself.
-  if (path.basename(process.execPath).toLowerCase() === 'node.exe') {
-    return process.execPath;
-  }
-  // PATH lookup
-  const pathVar = process.env.PATH ?? '';
-  for (const dir of pathVar.split(path.delimiter)) {
-    if (!dir) continue;
-    const exe = path.join(dir, 'node.exe');
-    if (fs.existsSync(exe)) return exe;
-  }
-  // Common install locations
-  for (const c of [
-    '%ProgramFiles%\\nodejs\\node.exe',
-    '%ProgramFiles(x86)%\\nodejs\\node.exe',
-    '%LOCALAPPDATA%\\Programs\\nodejs\\node.exe',
-    '%LOCALAPPDATA%\\nodejs\\node.exe',
-  ]) {
-    const p = expandEnv(c);
-    if (p && fs.existsSync(p)) return p;
-  }
-  return null;
-}
-
-function isServiceRoot(dir: string): boolean {
-  return (
-    fs.existsSync(path.join(dir, 'package.json')) &&
-    fs.existsSync(path.join(dir, 'scripts', 'keep_alive.cjs'))
-  );
-}
-
-/**
- * Where the RSS server lives (must contain package.json + scripts/keep_alive.cjs).
- * An explicit override (--server-root / baked build dir) is strict: a bad value
- * returns null so the installer reports it instead of guessing. Otherwise:
- * RSS_SERVER_ROOT env → current dir (dev) → walking up from the exe location.
- */
-export function findServiceRoot(override?: string): string | null {
-  if (override) {
-    const p = path.resolve(override);
-    return isServiceRoot(p) ? p : null;
-  }
-  if (process.env.RSS_SERVER_ROOT) {
-    const p = path.resolve(process.env.RSS_SERVER_ROOT);
-    if (isServiceRoot(p)) return p;
-  }
-  const candidates: string[] = [process.cwd()];
-  // Walk up from the exe dir (covers dist-zen/, the repo root, subfolders, ...).
-  let dir = path.dirname(process.execPath);
-  for (let i = 0; i < 6; i++) {
-    candidates.push(dir);
-    const parent = path.dirname(dir);
-    if (parent === dir) break;
-    dir = parent;
-  }
-  for (const c of candidates) {
-    const p = path.resolve(c);
-    if (isServiceRoot(p)) return p;
-  }
-  return null;
-}
-
-/** Command to run in an elevated prompt to register the service manually. */
-export function serviceCreateCommand(name: string, nodeExe: string, script: string): string {
-  const binPath = `"${nodeExe}" "${script}"`;
-  return (
-    `sc create ${name} binPath= "${binPath.replace(/"/g, '\\"')}" ` +
-    `start= auto DisplayName= "${SERVICE_DISPLAY_NAME.replace(/"/g, '\\"')}"`
-  );
-}
-
-/**
- * Register the RSS Sync server as a Windows service when one is not present.
- * Pushes actions/next-steps; never throws.
- */
-function ensureServerService(opts: InstallOptions, actions: Action[], nextSteps: string[]): void {
-  const ok = (m: string) => actions.push({ level: 'ok', message: m });
-  const warn = (m: string) => actions.push({ level: 'warn', message: m });
-  const info = (m: string) => actions.push({ level: 'info', message: m });
-  const skip = (m: string) => actions.push({ level: 'skip', message: m });
-
-  if (opts.installService === false) {
-    skip('Windows service: skipped (--no-service).');
-    return;
-  }
-  if (process.platform !== 'win32') {
-    skip('Windows service: skipped (not Windows).');
-    return;
-  }
-
-  const name = serviceName();
-  const dryRun = !!opts.dryRun;
-  const runner = opts.serviceRunner ?? defaultServiceRunner;
-
-  if (dryRun) {
-    info(`Windows service: would register "${name}" if it is missing (runs the RSS server at boot).`);
-    return;
-  }
-
-  const state = queryService(name, runner);
-  if (state.present) {
-    skip(`Windows service: "${name}" already registered${state.running ? ' and running' : ''} — nothing to do.`);
-    return;
-  }
-  if (state.detail) {
-    warn(`Windows service: could not check for "${name}" (${state.detail}).`);
-  }
-
-  const nodeExe = findNodeExe();
-  const root = findServiceRoot(opts.serverRoot);
-  if (!nodeExe || !root) {
-    warn(
-      `Windows service: cannot register "${name}" — node.exe: ${nodeExe ?? 'not found'}, ` +
-        `server root: ${root ?? 'not found'}. Register it manually in an elevated prompt: ` +
-        `sc create ${name} binPath= "<node.exe> <root>\\scripts\\keep_alive.cjs" start= auto`
-    );
-    return;
-  }
-
-  const script = path.join(root, 'scripts', 'keep_alive.cjs');
-  if (!fs.existsSync(script)) {
-    warn(`Windows service: ${script} not found — cannot register "${name}".`);
-    return;
-  }
-
-  const createCmd = serviceCreateCommand(name, nodeExe, script);
-  const res = runner([
-    'create',
-    name,
-    'binPath=',
-    `"${nodeExe}" "${script}"`,
-    'start=',
-    'auto',
-    'DisplayName=',
-    SERVICE_DISPLAY_NAME,
-  ]);
-  if (!res.ok) {
-    actions.push({
-      level: 'error',
-      message:
-        `Windows service: could not register "${name}" ` +
-        `(${(res.stderr || res.stdout).trim() || `sc.exe exited with code ${res.code}`}). ` +
-        `Run as administrator: ${createCmd}`,
-    });
-    nextSteps.push(`Open an elevated prompt and run: ${createCmd}`);
-    return;
-  }
-  ok(`Windows service: registered "${name}" (auto start at boot, runs ${script}).`);
-
-  const startRes = runner(['start', name]);
-  if (startRes.ok) {
-    ok(`Windows service: started "${name}".`);
-  } else {
-    info(`Windows service: registered but could not be started now — it will start at next boot (or run: sc start ${name}).`);
-  }
-}
-
-// ---------------------------------------------------------------------------
 // Status
 // ---------------------------------------------------------------------------
 
 export function status(opts: InstallOptions = {}): StatusReport {
   const files = opts.files ?? readPackageFilesFromDisk();
-  const discovery = discoverProfiles(opts.profileRoot, opts);
+  const discovery = discoverProfiles(opts.profileRoot);
   const { profiles, error } = resolveTarget(discovery, opts);
   const target = profiles.length > 0 ? profiles[0] : null;
 
@@ -934,11 +584,6 @@ export function status(opts: InstallOptions = {}): StatusReport {
     loader = { present: false, kind: 'none', programDir: null, programFilesInstalled: false, profileFilesInstalled: false, notes: [] };
   }
 
-  const service =
-    process.platform === 'win32'
-      ? { name: serviceName(), ...queryService(serviceName(), opts.serviceRunner ?? defaultServiceRunner) }
-      : { name: serviceName(), present: false, running: false };
-
   const nextSteps: string[] = [];
   if (target) {
     nextSteps.push('Restart Zen for changes to take effect.');
@@ -949,14 +594,14 @@ export function status(opts: InstallOptions = {}): StatusReport {
     }
     if (!loader.present) {
       nextSteps.push(
-        'No script loader detected — install fx-autoconfig or Sine, or re-run the installer once the Zen program dir is found.'
+        'No script loader detected — install fx-autoconfig (see zen/loader/README.md) or Sine, or re-run the installer once the Zen program dir is found.'
       );
     }
   } else if (error) {
     nextSteps.push(error);
   }
 
-  return { appRoot: discovery.appRoot, zenFound: discovery.zenFound, profiles: discovery.profiles, target, loader, engine, mod, prefs, service, nextSteps };
+  return { appRoot: discovery.appRoot, zenFound: discovery.zenFound, profiles: discovery.profiles, target, loader, engine, mod, prefs, nextSteps };
 }
 
 // ---------------------------------------------------------------------------
@@ -970,23 +615,14 @@ export function install(opts: InstallOptions = {}): InstallReport {
   const actions: Action[] = [];
   const nextSteps: string[] = [];
 
-  const discovery = discoverProfiles(opts.profileRoot, opts);
+  const discovery = discoverProfiles(opts.profileRoot);
+  const { profiles, error } = resolveTarget(discovery, opts);
+  if (profiles.length === 0) {
+    return { target: null, dryRun, actions: [{ level: 'error', message: error ?? 'No profiles to install into.' }], nextSteps };
+  }
 
   if (dryRun) {
     actions.push({ level: 'info', message: 'DRY RUN — nothing will be written.' });
-  }
-
-  // --- Windows service (RSS Sync server) ----------------------------------
-  ensureServerService(opts, actions, nextSteps);
-
-  const { profiles, error } = resolveTarget(discovery, opts);
-  if (profiles.length === 0) {
-    return {
-      target: null,
-      dryRun,
-      actions: [...actions, { level: 'error', message: error ?? 'No profiles to install into.' }],
-      nextSteps,
-    };
   }
 
   const ok = (m: string) => actions.push({ level: 'ok', message: m });
@@ -1026,7 +662,7 @@ export function install(opts: InstallOptions = {}): InstallReport {
     } else {
       if (!programDir) {
         warn(
-          'Loader: could not find the Zen program dir (zen.exe) — skipping loader install. Engine and mod are still installed; add fx-autoconfig or Sine manually.'
+          'Loader: could not find the Zen program dir (zen.exe) — skipping loader install. Engine and mod are still installed; add fx-autoconfig or Sine manually (see zen/loader/README.md).'
         );
         nextSteps.push('Install a script loader manually (fx-autoconfig or Sine), then restart Zen.');
       } else if (!isWritableDir(programDir)) {
@@ -1087,11 +723,12 @@ export function install(opts: InstallOptions = {}): InstallReport {
     const set = prefsSetInUserJs(profile.dir);
     const missing = ENGINE_PREFS.filter((p) => !set.includes(p));
     info(
-      missing.length
-        ? 'If your server runs at a different address than http://localhost:3000, set it in Zen: Settings → Mods → RSS Sync.'
-        : 'Your server address is already configured in Zen — nothing to set.'
+      'Prefs: left to you (installer never writes user.js/prefs.js).' +
+        (missing.length
+          ? ` Set manually in about:config if your server is not http://localhost:3000: ${missing.join(', ')}`
+          : ' All engine prefs are already present in user.js.')
     );
-    nextSteps.push('If your server runs at a different address than http://localhost:3000, set it in Zen: Settings → Mods → RSS Sync.');
+    nextSteps.push('Set the engine prefs in about:config or Zen Settings → Mods → RSS Sync if your server is not http://localhost:3000.');
     } catch (err) {
       actions.push({ level: 'error', message: `${profile.name}: ${(err as Error).message}` });
     }
@@ -1112,7 +749,7 @@ export function uninstall(opts: InstallOptions = {}): InstallReport {
   const actions: Action[] = [];
   const nextSteps: string[] = [];
 
-  const discovery = discoverProfiles(opts.profileRoot, opts);
+  const discovery = discoverProfiles(opts.profileRoot);
   const { profiles, error } = resolveTarget(discovery, opts);
   if (profiles.length === 0) {
     return { target: null, dryRun, actions: [{ level: 'error', message: error ?? 'No profiles to uninstall from.' }], nextSteps };
@@ -1186,7 +823,7 @@ export function uninstall(opts: InstallOptions = {}): InstallReport {
     }
 
     // Loader — kept on purpose (other scripts may depend on it).
-    info('The script loader was left in place so your other Zen scripts keep working.');
+    info('Loader: kept in place (other user scripts may depend on it). To remove it too, delete the loader files manually — see zen/loader/README.md.');
     } catch (err) {
       actions.push({ level: 'error', message: `${profile.name}: ${(err as Error).message}` });
     }

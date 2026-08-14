@@ -15,7 +15,8 @@ function startServer() {
   log('Starting RSS Aggregator Server...');
   const child = spawn(process.execPath, [serverPath], {
     stdio: 'ignore',
-    cwd: path.join(__dirname, '..')
+    cwd: path.join(__dirname, '..'),
+    windowsHide: true
   });
 
   child.on('error', (err) => {

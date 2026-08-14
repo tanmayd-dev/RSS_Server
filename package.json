@@ -14,8 +14,7 @@
     "zen-status": "tsx src/zen/cli.ts status",
     "zen-install": "tsx src/zen/cli.ts install",
     "zen-uninstall": "tsx src/zen/cli.ts uninstall",
-    "build-installer": "node scripts/build_installer.mjs",
-    "publish-installer": "node scripts/publish_release.mjs"
+    "build-installer": "node scripts/build_installer.mjs"
   },
   "keywords": [],
   "author": "",
