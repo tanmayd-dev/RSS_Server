@@ -1,5 +1,8 @@
 # RSS Sync — Manual Install & Validation Checklist
 
+> Part of the [RSS Aggregator](..) project — see the [root README](../README.md) and
+> [zen/README.md](README.md) for the full picture.
+>
 > **Automated path:** `zen-install.exe install` (Windows) automates steps 1–3
 > (loader + engine + mod, default profile) and then validates with `zen-install.exe status`.
 > Use this checklist when installing by hand, or to validate what the installer did.

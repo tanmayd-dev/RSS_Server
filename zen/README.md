@@ -1,5 +1,9 @@
 # Zen Browser Integration
 
+> Part of the [RSS Aggregator](..) project. See the [root README](../README.md) for the
+> server + API overview, and [INSTALL_CHECKLIST.md](INSTALL_CHECKLIST.md) for the manual
+> validation checklist.
+
 Mirror feeds from the local RSS Aggregator server into Zen Browser **Live Folders**:
 
 - **One live folder per feed.** The folder subscribes to `{server}/feeds/{feedId}?ttl=0`,
@@ -149,4 +153,11 @@ Implemented in step 1 of the design:
 ## Testing
 
 See `scripts/test_endpoints.ts` for offline tests of the `?ttl` / `ttl=0` / dedup
-behaviors the engine depends on (`npm run test-endpoints`).
+behaviors the engine depends on (`npm run test-endpoints`). `npm run test-uc`
+covers the engine logic itself.
+
+## Related documentation
+
+- [Root README](../README.md) — project overview, quick start, API reference, testing.
+- [INSTALL_CHECKLIST.md](INSTALL_CHECKLIST.md) — manual install + validation checklist.
+- [Frontend README](../frontend/README.md) — the RSS Aggregator web UI.
