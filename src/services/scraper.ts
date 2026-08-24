@@ -1,4 +1,4 @@
-import axios from 'axios';
+import axios, { AxiosResponse } from 'axios';
 import * as cheerio from 'cheerio';
 import Parser from 'rss-parser';
 import { HtmlConfig, ScrapedFeedItem, YoutubeConfig } from '../types.js';
@@ -12,6 +12,49 @@ const client = axios.create({
   },
   timeout: 10000,
 });
+
+/**
+ * GET with retry on transient failures.
+ *
+ * YouTube intermittently answers valid channel pages and `feeds/videos.xml` URLs
+ * with generic Google "Error 404 (Not Found)!!1" / "Error 500 (Server Error)!!1"
+ * pages (bot mitigation) even though the channel exists and a retry seconds later
+ * succeeds. Without retries a single flaky answer fails the whole refresh.
+ * Retries cover transient statuses (403/404/408/425/429/5xx) and network errors;
+ * 400/401/402/406... are treated as permanent and fail fast.
+ */
+async function getWithRetry(
+  url: string,
+  opts: { attempts?: number; baseDelayMs?: number } = {}
+): Promise<AxiosResponse> {
+  const attempts = opts.attempts ?? 5;
+  const baseDelayMs = opts.baseDelayMs ?? 500;
+  let lastError: unknown;
+
+  for (let attempt = 1; attempt <= attempts; attempt++) {
+    try {
+      return await client.get(url);
+    } catch (err: any) {
+      lastError = err;
+      const status = err?.response?.status;
+      const retriable =
+        !err?.response || // network-level failure (no HTTP response received)
+        status === 403 ||
+        status === 404 ||
+        status === 408 ||
+        status === 425 ||
+        status === 429 ||
+        (status >= 500 && status <= 599);
+      if (!retriable || attempt === attempts) {
+        break;
+      }
+      const jitter = Math.round(Math.random() * 200);
+      await new Promise((resolve) => setTimeout(resolve, baseDelayMs * attempt + jitter));
+    }
+  }
+
+  throw lastError;
+}
 
 // Helper to resolve relative URLs
 function resolveUrl(baseUrl: string, relativeUrl: string): string {
@@ -130,7 +173,7 @@ export async function resolveYoutubeChannel(channelUrl: string): Promise<{ resol
   }
 
   // Fetch the page HTML to find the RSS alternate link
-  const response = await client.get(channelUrl);
+  const response = await getWithRetry(channelUrl);
   const $ = cheerio.load(response.data);
 
   let resolved: { resolvedUrl: string; name: string } | null = null;
@@ -207,8 +250,11 @@ export async function checkIsYoutubeShort(videoId: string): Promise<boolean> {
 /**
  * Fetches and parses a YouTube RSS feed
  */
-export async function fetchYoutubeRss(rssUrl: string): Promise<ScrapedFeedItem[]> {
-  const response = await client.get(rssUrl);
+export async function fetchYoutubeRss(
+  rssUrl: string,
+  opts: { attempts?: number; baseDelayMs?: number } = {}
+): Promise<ScrapedFeedItem[]> {
+  const response = await getWithRetry(rssUrl, opts);
   const feed = await parser.parseString(response.data);
   
   const items: ScrapedFeedItem[] = feed.items.map((item) => {
