@@ -61,7 +61,7 @@ export async function updateFeedIfNeeded(
     if (opts.force) {
       isExpired = true;
     } else if (opts.disabled) {
-      // Auto-refresh disabled (Zen-only feeds): only fetch sources never fetched before.
+      // Auto-refresh disabled (TTL 0): only fetch sources never fetched before.
       isExpired = !lastFetched;
     } else {
       isExpired = !lastFetched || (now.getTime() - lastFetched.getTime()) / (1000 * 60) >= ttlMinutes;

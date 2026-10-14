@@ -1,0 +1,27 @@
+# RSS Aggregator server — systemd user service.
+#
+# Installed to ~/.config/systemd/user/rss-server.service by systemd/install.sh
+# (the @REPO_DIR@ placeholder below is replaced with the real repo path at
+# install time). After installing:
+#
+#   systemctl daemon-reload --user
+#   systemctl enable --now --user rss-server
+#
+# To start at boot (before login), also run: loginctl enable-linger $USER
+
+[Unit]
+Description=RSS Aggregator server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=@REPO_DIR@
+Environment=NODE_ENV=production
+Environment=DATABASE_URL=file:@REPO_DIR@/prisma/dev.db
+ExecStart=/usr/bin/node @REPO_DIR@/dist/index.js
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target

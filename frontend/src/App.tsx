@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { 
   Sun, Moon, Trash2, Copy, Check, Plus, 
   RefreshCw, AlertCircle, Link, Rss, Youtube, 
-  MessageSquare, Globe, X, ExternalLink, Settings, Zap, ChevronDown, Download,
+  MessageSquare, Globe, X, ExternalLink, Settings,
   Inbox, MailOpen, CheckCheck
 } from 'lucide-react';
 import { Feed, FeedItem, FeedType, ScrapedFeedItem } from './types.js';
@@ -55,9 +55,6 @@ export default function App() {
   };
 
   const [copiedFeedId, setCopiedFeedId] = useState<string | null>(null);
-  const [copiedZenFeedId, setCopiedZenFeedId] = useState<string | null>(null);
-  const [serverUrlCopied, setServerUrlCopied] = useState<boolean>(false);
-  const [zenPanelOpen, setZenPanelOpen] = useState<boolean>(true);
   const [refreshingFeedId, setRefreshingFeedId] = useState<string | null>(null);
   const [saving, setSaving] = useState<boolean>(false);
 
@@ -71,11 +68,6 @@ export default function App() {
   const [itemsOffset, setItemsOffset] = useState<number>(0);
   const [itemsUnreadOnly, setItemsUnreadOnly] = useState<boolean>(false);
   const ITEMS_PAGE_SIZE = 50;
-
-  // Zen integration install status (read-only /api/zen/status)
-  const [zenInstallState, setZenInstallState] = useState<'checking' | 'zen-not-found' | 'zen-no-profile' | 'installed' | 'running' | 'not-installed'>('checking');
-
-
 
   // Apply dark mode theme
   useEffect(() => {
@@ -123,26 +115,7 @@ export default function App() {
 
   useEffect(() => {
     fetchFeeds();
-    fetchZenStatus();
   }, []);
-
-  // Whether the Zen integration is installed on this PC (read-only check)
-  const fetchZenStatus = async () => {
-    try {
-      const res = await fetch('/api/zen/status');
-      if (!res.ok) {
-        setZenInstallState('checking');
-        return;
-      }
-      const data = await res.json();
-      if (!data.zenFound) setZenInstallState(data.appInstalled ? 'zen-no-profile' : 'zen-not-found');
-      else if (data.running) setZenInstallState('running');
-      else if (data.installed) setZenInstallState('installed');
-      else setZenInstallState('not-installed');
-    } catch {
-      setZenInstallState('checking');
-    }
-  };
 
   // --- Items reader ---
   const loadItems = async (feedId: string | null, unreadOnly: boolean, offset: number, append: boolean) => {
@@ -370,11 +343,6 @@ export default function App() {
     copyText(`${window.location.origin}/feeds/${feedId}`, () => setCopiedFeedId(feedId));
   };
 
-  // Copy the Zen live-folder link (?ttl=0 makes the server refresh on every Zen poll)
-  const handleCopyZenLink = (feedId: string) => {
-    copyText(`${window.location.origin}/feeds/${feedId}?ttl=0`, () => setCopiedZenFeedId(feedId));
-  };
-
   // Format date helper
   const formatDate = (dateStr: string | null) => {
     if (!dateStr) return 'Never';
@@ -544,9 +512,9 @@ export default function App() {
                         {feed.ttl === 0 ? (
                           <span 
                             className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-semibold leading-none bg-orange-100 text-orange-700 dark:bg-orange-900/30 dark:text-orange-300"
-                            title="Updates when Zen refreshes its folder in your sidebar."
+                            title="Auto-refresh is off — the feed is only fetched on demand."
                           >
-                            <Zap className="w-3 h-3 mr-1" /> Zen-synced
+                            On-demand
                           </span>
                         ) : feed.ttl < 60 ? (
                           <span className="text-gray-650 dark:text-gray-350">{feed.ttl} mins</span>
@@ -562,13 +530,6 @@ export default function App() {
                               title="Copy feed link"
                             >
                               {copiedFeedId === feed.id ? <Check className="w-3.5 h-3.5 text-green-600" /> : <Copy className="w-3.5 h-3.5" />}
-                            </button>
-                            <button 
-                              onClick={() => handleCopyZenLink(feed.id)}
-                              className="p-1 rounded bg-white hover:bg-gray-100 dark:bg-gray-800 dark:hover:bg-gray-700 border border-gray-200 dark:border-gray-700 text-gray-500 dark:text-gray-400 hover:text-orange-500 transition"
-                              title="Copy the live folder link for Zen — it refreshes whenever Zen checks"
-                            >
-                              {copiedZenFeedId === feed.id ? <Check className="w-3.5 h-3.5 text-green-600" /> : <Zap className="w-3.5 h-3.5" />}
                             </button>
                           </div>
                       </td>
@@ -610,121 +571,6 @@ export default function App() {
                   ))}
                 </tbody>
               </table>
-            </div>
-          )}
-        </div>
-
-        {/* ZEN BROWSER INTEGRATION PANEL */}
-        <div className="mt-6 bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-800 rounded-xl overflow-hidden shadow-sm">
-          <button
-            type="button"
-            onClick={() => setZenPanelOpen(!zenPanelOpen)}
-            className="w-full px-6 py-4 flex items-center justify-between text-left hover:bg-gray-50 dark:hover:bg-gray-800/50 transition"
-          >
-            <div className="flex items-center space-x-3">
-              <div className="bg-orange-500/10 text-orange-500 p-2 rounded-lg">
-                <Zap className="w-5 h-5" />
-              </div>
-              <div>
-                <h2 className="font-semibold text-lg">Zen Browser Integration</h2>
-                <p className="text-xs text-gray-500 dark:text-gray-400">
-                  {feeds.length} feed{feeds.length === 1 ? '' : 's'} → {feeds.length} live folder{feeds.length === 1 ? '' : 's'} in Zen
-                </p>
-              </div>
-            </div>
-            <ChevronDown className={`w-5 h-5 text-gray-400 transition-transform ${zenPanelOpen ? 'rotate-180' : ''}`} />
-          </button>
-
-          {zenPanelOpen && (
-            <div className="px-6 pb-6 border-t border-gray-200 dark:border-gray-800">
-              <div className="grid md:grid-cols-2 gap-4 py-4">
-                <div className="bg-gray-50 dark:bg-gray-900/60 border border-gray-200 dark:border-gray-800 rounded-lg p-3">
-                  <div className="text-[10px] font-bold uppercase tracking-wider text-gray-400 mb-1">Server address (Zen connects here)</div>
-                  <div className="flex items-center space-x-1.5">
-                    <code className="text-xs font-mono bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded px-2 py-1 flex-1 truncate">
-                      {window.location.origin}
-                    </code>
-                    <button
-                      onClick={() => copyText(window.location.origin, () => setServerUrlCopied(true))}
-                      className="p-1.5 rounded bg-white hover:bg-gray-100 dark:bg-gray-800 dark:hover:bg-gray-700 border border-gray-200 dark:border-gray-700 text-gray-500 dark:text-gray-400 hover:text-orange-500 transition"
-                      title="Copy server address"
-                    >
-                      {serverUrlCopied ? <Check className="w-3.5 h-3.5 text-green-600" /> : <Copy className="w-3.5 h-3.5" />}
-                    </button>
-                  </div>
-                  <p className="text-[11px] text-gray-500 dark:text-gray-400 mt-1.5">
-                    This is where Zen reads your feeds from. You usually don't need to touch it — copy it only if you're setting up Zen by hand.
-                  </p>
-                </div>
-
-                <div className="bg-gray-50 dark:bg-gray-900/60 border border-gray-200 dark:border-gray-800 rounded-lg p-3">
-                  <div className="text-[10px] font-bold uppercase tracking-wider text-gray-400 mb-1">How it works</div>
-                  <ul className="text-xs space-y-1 text-gray-600 dark:text-gray-300">
-                    <li>• One live folder per feed appears in Zen's sidebar</li>
-                    <li>• New items show up automatically — folders refresh on their own</li>
-                    <li>• Remove a feed here and its folder disappears from Zen</li>
-                  </ul>
-                </div>
-              </div>
-
-              <div>
-                <div className="text-[10px] font-bold uppercase tracking-wider text-gray-400 mb-2 flex items-center justify-between">
-                  <span>Install in Zen (Windows)</span>
-                  {zenInstallState !== 'checking' && (
-                    <span
-                      className={`inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-semibold leading-none ${
-                        zenInstallState === 'installed'
-                          ? 'bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-300'
-                          : zenInstallState === 'running'
-                            ? 'bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-300'
-                            : zenInstallState === 'zen-not-found'
-                              ? 'bg-gray-100 text-gray-500 dark:bg-gray-800 dark:text-gray-400'
-                              : 'bg-indigo-100 text-indigo-700 dark:bg-indigo-950/50 dark:text-indigo-300'
-                      }`}
-                    >
-                      {zenInstallState === 'installed' && '✓ Installed — restart Zen to finish'}
-                      {zenInstallState === 'running' && 'Zen is open — close it, then run the installer'}
-                      {zenInstallState === 'not-installed' && 'Not installed yet'}
-                      {zenInstallState === 'zen-not-found' && 'Zen not detected on this PC'}
-                      {zenInstallState === 'zen-no-profile' && 'Zen found — launch it once to create your profile'}
-                    </span>
-                  )}
-                </div>
-                <div className="flex flex-col sm:flex-row sm:items-center gap-3">
-                  <a
-                    href="https://github.com/tanmayd-dev/RSS_Server/releases/latest/download/zen-install.exe"
-                    target="_blank"
-                    rel="noreferrer"
-                    className="inline-flex items-center justify-center gap-2 bg-orange-500 hover:bg-orange-600 text-white text-sm font-semibold px-4 py-2.5 rounded-lg transition shadow-sm"
-                  >
-                    <Download className="w-4 h-4" />
-                    Download zen-install.exe
-                  </a>
-                  <p className="text-[11px] text-gray-500 dark:text-gray-400">
-                    Sets everything up for you — download, double-click, restart Zen. Your feeds appear as folders in the sidebar within a minute.
-                  </p>
-                </div>
-                <p className="text-[11px] text-gray-500 dark:text-gray-400 mt-2">
-                  Windows may show a "Windows protected your PC" warning the first time — click <strong>More info → Run anyway</strong>. It's expected until the installer is signed.
-                </p>
-                <ul className="text-xs space-y-1.5 text-gray-600 dark:text-gray-300 mt-3 list-disc list-inside">
-                  <li>Nothing to configure — it installs into your main Zen profile automatically.</li>
-                  <li>If your server runs at a different address than <code className="bg-gray-100 dark:bg-gray-800 px-1 rounded">http://localhost:3000</code>, set it in Zen: <strong>Settings → Mods → RSS Sync</strong>.</li>
-                  <li>Changed your mind? Run <code className="bg-gray-100 dark:bg-gray-800 px-1 rounded">zen-install.exe uninstall</code> and restart Zen.</li>
-                </ul>
-                <details className="mt-3">
-                  <summary className="text-xs font-semibold text-indigo-600 dark:text-indigo-400 cursor-pointer hover:underline">Manual setup (advanced)</summary>
-                  <ol className="text-xs space-y-2 text-gray-600 dark:text-gray-300 list-decimal list-inside mt-2">
-                    <li>Install a userChrome.js loader in Zen: <a href="https://github.com/MrOtherGuy/fx-autoconfig" target="_blank" rel="noreferrer" className="text-indigo-600 dark:text-indigo-400 hover:underline inline-flex items-center">fx-autoconfig <ExternalLink className="w-3 h-3 ml-0.5" /></a> or <a href="https://github.com/CosmoCreeper/Sine" target="_blank" rel="noreferrer" className="text-indigo-600 dark:text-indigo-400 hover:underline inline-flex items-center">Sine <ExternalLink className="w-3 h-3 ml-0.5" /></a>.</li>
-                    <li>Copy <code className="bg-gray-100 dark:bg-gray-800 px-1 rounded">zen/uc/rss-sync.uc.mjs</code> and <code className="bg-gray-100 dark:bg-gray-800 px-1 rounded">zen/uc/import.uc.mjs</code> into <code className="bg-gray-100 dark:bg-gray-800 px-1 rounded">&lt;profile&gt;/chrome/JS/</code>.</li>
-                    <li>Install the <strong>RSS Sync</strong> mod (<code className="bg-gray-100 dark:bg-gray-800 px-1 rounded">zen/mod/chrome.css</code> + <code className="bg-gray-100 dark:bg-gray-800 px-1 rounded">preferences.json</code>) via the <a href="https://zen-browser.app/mods/" target="_blank" rel="noreferrer" className="text-indigo-600 dark:text-indigo-400 hover:underline inline-flex items-center">Zen Mods marketplace <ExternalLink className="w-3 h-3 ml-0.5" /></a> or manual copy.</li>
-                    <li>Restart Zen — live folders appear within seconds of the server responding.</li>
-                  </ol>
-                </details>
-                <p className="text-[11px] text-gray-500 dark:text-gray-400 mt-2">
-                  Need help? Run <code className="bg-gray-100 dark:bg-gray-800 px-1 rounded">zen-install.exe --help</code> from a terminal for every option.
-                </p>
-              </div>
             </div>
           )}
         </div>
@@ -904,7 +750,7 @@ export default function App() {
                     onChange={(e) => setTtl(parseInt(e.target.value))}
                     className="w-full bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-indigo-500"
                   >
-                    <option value="0">Off — only refreshes when Zen checks</option>
+                    <option value="0">Off — only refresh on demand</option>
                     <option value="5">5 minutes</option>
                     <option value="15">15 minutes</option>
                     <option value="30">30 minutes</option>

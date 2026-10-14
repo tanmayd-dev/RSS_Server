@@ -1,8 +1,5 @@
 import express from 'express';
 import http from 'http';
-import fs from 'node:fs';
-import os from 'node:os';
-import path from 'node:path';
 import axios from 'axios';
 import { router } from '../src/routes.js';
 import { prisma } from '../src/services/db.js';
@@ -457,43 +454,6 @@ async function runTests() {
       await axios.delete(`${BASE_URL}/api/feeds/${id}`);
     }
     await new Promise<void>((resolve) => readerRssServer.close(() => resolve()));
-  }
-
-  // 10.8 Zen integration status endpoint (read-only, fake profile root)
-  console.log('\n=== Zen Status Endpoint Tests (fake profile root) ===');
-  const zenFakeRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'zen-status-test-'));
-  const zenFakeProg = fs.mkdtempSync(path.join(os.tmpdir(), 'zen-status-prog-'));
-  try {
-    fs.mkdirSync(path.join(zenFakeRoot, 'Profiles', 'aaa.default'), { recursive: true });
-    fs.writeFileSync(
-      path.join(zenFakeRoot, 'profiles.ini'),
-      '[Profile0]\nName=default\nIsRelative=1\nPath=Profiles/aaa.default\nDefault=1\n'
-    );
-    fs.writeFileSync(path.join(zenFakeProg, 'zen.exe'), 'fake');
-    process.env.ZEN_PROFILE_ROOT = zenFakeRoot;
-    process.env.ZEN_PROGRAM_DIR = zenFakeProg;
-
-    const zenRes = await axios.get(`${BASE_URL}/api/zen/status`);
-    if (!zenRes.data.zenFound || zenRes.data.profileCount !== 1) {
-      throw new Error(`Expected 1 Zen profile, got ${JSON.stringify(zenRes.data)}`);
-    }
-    if (zenRes.data.installed !== false) {
-      throw new Error('A fresh profile should report not installed');
-    }
-    // Simulate an installed engine file
-    const jsDir = path.join(zenFakeRoot, 'Profiles', 'aaa.default', 'chrome', 'JS');
-    fs.mkdirSync(jsDir, { recursive: true });
-    fs.writeFileSync(path.join(jsDir, 'rss-sync.uc.mjs'), 'x');
-    const zenRes2 = await axios.get(`${BASE_URL}/api/zen/status`);
-    if (zenRes2.data.installed !== true) {
-      throw new Error('A profile with the engine file should report installed');
-    }
-    console.log('  [OK] /api/zen/status reports fresh vs installed state (read-only)');
-  } finally {
-    delete process.env.ZEN_PROFILE_ROOT;
-    delete process.env.ZEN_PROGRAM_DIR;
-    fs.rmSync(zenFakeRoot, { recursive: true, force: true });
-    fs.rmSync(zenFakeProg, { recursive: true, force: true });
   }
 
   // 11. Clean Up / Delete Feeds

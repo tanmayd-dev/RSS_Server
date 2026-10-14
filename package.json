@@ -9,13 +9,7 @@
     "start": "node dist/index.js",
     "test-endpoints": "tsx scripts/test_endpoints.ts",
     "test-browser": "tsx scripts/browser_test.ts",
-    "test-uc": "node scripts/test_uc_engine.mjs",
-    "test-installer": "tsx scripts/test_installer.ts",
-    "zen-status": "tsx src/zen/cli.ts status",
-    "zen-install": "tsx src/zen/cli.ts install",
-    "zen-uninstall": "tsx src/zen/cli.ts uninstall",
-    "build-installer": "node scripts/build_installer.mjs",
-    "publish-installer": "node scripts/publish_release.mjs"
+    "test-db": "tsx scripts/test_db_tables.ts"
   },
   "keywords": [],
   "author": "",
@@ -27,6 +21,7 @@
     "@prisma/client": "^7.8.0",
     "axios": "^1.18.1",
     "cheerio": "^1.2.0",
+    "dotenv": "^17.2.0",
     "express": "^5.2.1",
     "feed": "^5.2.1",
     "rss-parser": "^3.13.0"
@@ -34,11 +29,14 @@
   "devDependencies": {
     "@types/express": "^5.0.6",
     "@types/node": "^26.1.0",
-    "esbuild": "^0.28.2",
     "playwright": "^1.61.1",
-    "postject": "^1.0.0-alpha.6",
     "prisma": "^7.8.0",
     "tsx": "^4.23.0",
     "typescript": "^6.0.3"
+  },
+  "allowScripts": {
+    "prisma@7.8.0": true,
+    "@prisma/engines@7.8.0": true,
+    "esbuild@0.28.2": true
   }
 }

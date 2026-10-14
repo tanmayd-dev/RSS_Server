@@ -3,7 +3,6 @@ import { prisma } from './services/db.js';
 import * as feedManager from './services/feedManager.js';
 import * as feedGenerator from './services/feedGenerator.js';
 import * as scraper from './services/scraper.js';
-import { findZenProgramDir, status as zenInstallStatus } from './zen/installer.js';
 
 export const router = Router();
 
@@ -37,7 +36,7 @@ router.post('/api/feeds', async (req: Request, res: Response) => {
     }
   }
 
-  // Parse TTL. 0 means auto-refresh disabled (the feed is only refreshed on demand, e.g. by Zen).
+  // Parse TTL. 0 means auto-refresh is disabled (the feed is only refreshed on demand).
   let ttlMinutes = 15;
   if (ttl !== undefined && ttl !== null && ttl !== '') {
     ttlMinutes = parseInt(ttl as string, 10);
@@ -146,7 +145,7 @@ router.put('/api/feeds/:id', async (req: Request, res: Response) => {
     }
   }
 
-  // Parse TTL. 0 means auto-refresh disabled (the feed is only refreshed on demand, e.g. by Zen).
+  // Parse TTL. 0 means auto-refresh is disabled (the feed is only refreshed on demand).
   let ttlMinutes = 15;
   if (ttl !== undefined && ttl !== null && ttl !== '') {
     ttlMinutes = parseInt(ttl as string, 10);
@@ -255,33 +254,6 @@ router.delete('/api/feeds/:id', async (req: Request, res: Response) => {
       res.status(404).json({ error: 'Feed not found' });
       return;
     }
-    res.status(500).json({ error: error.message });
-  }
-});
-
-/**
- * Read-only status of the Zen integration (same core as zen-install.exe status).
- * Never writes — safe to expose on the loopback-only server.
- */
-router.get('/api/zen/status', (_req: Request, res: Response) => {
-  try {
-    const report = zenInstallStatus();
-    const target = report.target;
-    res.json({
-      zenFound: report.zenFound,
-      appInstalled: !!findZenProgramDir(),
-      appRoot: report.appRoot,
-      profileCount: report.profiles.length,
-      installed: !!target && (report.loader.present || report.engine.present),
-      running: !!target?.running,
-      targetName: target?.name ?? null,
-      error: report.zenFound
-        ? null
-        : report.appRoot
-          ? `No Zen profiles found at ${report.appRoot}`
-          : 'Zen is not supported on this platform',
-    });
-  } catch (error: any) {
     res.status(500).json({ error: error.message });
   }
 });
@@ -506,9 +478,9 @@ router.get('/feeds/:id', async (req: Request, res: Response) => {
 
     // TTL is determined dynamically:
     // 1. From the link query parameter (?ttl=30) — ?ttl=0 forces a refresh.
-    // 2. From the stored feed TTL. A stored TTL of 0 means auto-refresh is disabled
-    //    (Zen-only feeds): the feed is only fetched if never fetched, or when an
-    //    explicit refresh is requested (?ttl=0 or POST /api/feeds/:id/refresh).
+    // 2. From the stored feed TTL. A stored TTL of 0 means auto-refresh is disabled:
+    //    the feed is only fetched if never fetched, or when an explicit refresh is
+    //    requested (?ttl=0 or POST /api/feeds/:id/refresh).
     // 3. Default to 15 minutes.
     let ttl = feed.ttl ?? 15;
     let force = false;
